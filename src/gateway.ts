@@ -4,6 +4,7 @@ export type Entity = {
   currency: string
   status: string
   order_id?: string
+  payment_id?: string
   amount_refunded?: number
   notes?: Record<string, string>
   receipt?: string

@@ -84,8 +84,8 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
   }
   private async payment(d: Data): Promise<Entity | undefined> {
     await this.order(d)
-    const client = d.client
-    const callbackId = client?.razorpay_payment_id
+    const client = d.client,
+      callbackId = client?.razorpay_payment_id
     if (callbackId !== undefined) {
       if (
         client?.razorpay_order_id !== d.order_id ||
@@ -98,15 +98,25 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
         this.options.key_secret
       )
     }
-    const id = d.payment_id ?? callbackId
-    if (id !== undefined) {
+    const fetchPayment = async (id: unknown) => {
       if (typeof id !== "string" || !/^pay_[A-Za-z0-9]+$/.test(id))
         throw new Error("Invalid gateway payment ID")
       const payment = await this.api.request<Entity>("payments/" + id)
       this.checkPayment(d, payment)
       return payment
     }
-    // Webhooks can arrive before the browser returns. Retrieve authoritative gateway state.
+    const previous = d.payment_id ? await fetchPayment(d.payment_id) : undefined
+    if (previous && previous.status !== "failed") {
+      if (callbackId !== undefined && callbackId !== previous.id)
+        throw new Error(
+          "Another payment attempt is already in progress or settled; reconcile before retrying"
+        )
+      return previous
+    }
+    // A failed attempt is terminal. A later attempt can belong to this same order,
+    // but a still-authorized/captured/refunded association is never silently replaced.
+    if (callbackId !== undefined && callbackId !== previous?.id)
+      return fetchPayment(callbackId)
     const list = await this.api.request<{ items: Entity[] }>(
       "orders/" + d.order_id + "/payments"
     )
@@ -119,7 +129,7 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
       )
     const payment = candidates[0]
     if (payment) this.checkPayment(d, payment)
-    return payment
+    return payment ?? previous
   }
   private checkPayment(d: Data, p: Entity) {
     if (
@@ -172,8 +182,15 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
       throw new Error("Totals changed; initialize a fresh payment session")
     const p = await this.payment(d)
     return {
-      data: { ...d, ...(p ? { payment_id: p.id } : {}) },
-      status: this.statusOf(p),
+      data: {
+        ...d,
+        ...(p ? { payment_id: p.id } : {}),
+        gateway_status: p?.status ?? "created",
+      },
+      status:
+        p?.status === "captured"
+          ? PaymentSessionStatus.CAPTURED
+          : PaymentSessionStatus.PENDING,
     }
   }
   async authorizePayment(input: AuthorizePaymentInput) {
@@ -222,11 +239,27 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
       { amount, speed: "normal" },
       { "X-Refund-Idempotency": idempotency }
     )
-    if (refund.amount !== amount)
+    if (
+      !/^rfnd_[A-Za-z0-9]+$/.test(refund.id) ||
+      refund.payment_id !== p.id ||
+      refund.amount !== amount ||
+      refund.currency !== d.currency ||
+      !["pending", "processed"].includes(refund.status)
+    )
       throw new Error(
-        "Refund response amount mismatch; reconcile using the same operation key"
+        "Refund was not accepted with the expected payment, amount and currency; reconcile using the same operation key"
       )
-    return { data: { ...d, payment_id: p.id, last_refund_id: refund.id } }
+    // This is an immutable response snapshot, not a refreshed settlement status.
+    const data = { ...d }
+    delete data.last_refund_status
+    return {
+      data: {
+        ...data,
+        payment_id: p.id,
+        last_refund_id: refund.id,
+        last_refund_initial_status: refund.status,
+      },
+    }
   }
   async cancelPayment(input: CancelPaymentInput) {
     const d = this.data(input)

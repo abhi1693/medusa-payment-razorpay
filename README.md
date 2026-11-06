@@ -41,3 +41,13 @@ No live gateway operations belong in automated tests. Mocked tests establish loc
 The native lifecycle fixture in `tests/native` is run in the consuming application CI image against a fresh disposable PostgreSQL database. `run.mjs` refuses development database targets and drops its temporary database in a finally block. Mount the built provider at `/server/owned-razorpay` and register its `/server/owned-razorpay/dist` provider path with fixture-only test options in the isolated consumer config. All gateway calls in this fixture are intercepted; no Razorpay transactions are created. It verifies persisted native authorization/capture/refund behavior, including a lost refund response and keyed retry.
 
 This repository has no checkout UI, merchant acceptance policy, or application-specific routes. Those belong to the consuming application. A production release, account activation and real gateway verification are separate review gates.
+
+Failed gateway attempts can be retried on the same order. A replacement attempt is accepted only after the prior bound attempt is terminally failed; authorized, captured or refunded associations are never silently rebound. Session updates include the public gateway_status so the consuming checkout can distinguish an unpaid/failed order from one awaiting automatic capture.
+
+### Refund acceptance and settlement
+
+Full and partial INR refunds use the native Medusa refund amount and operation identity. The provider validates the gateway refund ID, payment association, exact paise amount, currency and acceptance status. Failed or unknown refund states are rejected. A `pending` response records an accepted refund request, not completed bank settlement; the initial gateway response status is exposed as `last_refund_initial_status` in native payment data. This immutable response snapshot is informational, not a refund ledger or a current settlement status. Later gateway processing does not change it. Retrieve the referenced gateway refund for its current processing state.
+
+If a response is lost or inconsistent, reconcile the gateway operation before issuing another refund. Preserve the original native idempotency identity for a retry; a new operation identity represents a new monetary request. Out-of-band refunds and later refund failures are not automatically synchronized by the current payment webhook handler.
+
+Contract: https://github.com/razorpay/razorpay-node/blob/master/lib/types/refunds.d.ts (reviewed 2026-11-06).
