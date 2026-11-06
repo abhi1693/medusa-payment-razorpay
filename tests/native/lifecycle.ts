@@ -1,13 +1,22 @@
 import assert from "node:assert/strict"
 import { createHmac } from "node:crypto"
 import type { ExecArgs, IPaymentModuleService } from "@medusajs/framework/types"
-import { Modules } from "@medusajs/framework/utils"
+import {
+  Modules,
+  ModulesSdkUtils,
+  SoftDeletableFilterKey,
+} from "@medusajs/framework/utils"
 import { updatePaymentSessionClientDataWorkflow } from "@medusajs/medusa/core-flows"
 export default async function lifecycle({ container }: ExecArgs) {
   const url = new URL(process.env.DATABASE_URL!)
   assert.ok(url.pathname.startsWith("/razorpay_isolated_"))
   assert.equal(process.env.NODE_ENV, "test")
   const service = container.resolve<IPaymentModuleService>(Modules.PAYMENT)
+  const observationDb = ModulesSdkUtils.createPgConnection({
+    clientUrl: process.env.DATABASE_URL!,
+    pool: { min: 0, max: 1 },
+  })
+  let nativePaymentId: string | undefined
   const realFetch = globalThis.fetch
   let order: any
   let payment: any
@@ -37,12 +46,31 @@ export default async function lifecycle({ container }: ExecArgs) {
       throw Error("Auto-capture must not POST capture")
     } else if (path === "payments/pay_native/refund") {
       refundPosts++
+      assert.ok(nativePaymentId)
+      const reserved = await observationDb.raw(
+        "SELECT count(*)::int AS count FROM refund WHERE payment_id = ? AND deleted_at IS NULL",
+        [nativePaymentId]
+      )
+      assert.ok(
+        reserved.rows[0].count > 0,
+        "Native refund reservation must be committed before the provider request"
+      )
+      if (process.env.TEST_EXPECT_REFUND_GUARD === "true") {
+        const locked = await observationDb.raw(
+          "SELECT count(*)::int AS count FROM pg_locks WHERE locktype='advisory' AND granted AND database=(SELECT oid FROM pg_database WHERE datname=current_database())"
+        )
+        assert.ok(
+          locked.rows[0].count > 0,
+          "Configured provider refund must hold its coordination lock"
+        )
+      }
       const key = init.headers["X-Refund-Idempotency"]
       assert.match(key, /^[a-f0-9]{64}$/)
       if (!refunds.has(key)) {
         refunds.set(key, {
           id: "rfnd_native" + refunds.size,
           amount: body.amount,
+          currency: "INR",
           status: "processed",
           payment_id: payment.id,
         })
@@ -88,6 +116,11 @@ export default async function lifecycle({ container }: ExecArgs) {
         payment_collection_id: collection.id,
         payment_session_id: session.id,
         client_data: {
+          order_id: "order_foreign",
+          session_id: "payses_foreign",
+          amount: 1,
+          currency: "USD",
+          payment_id: "pay_foreign",
           razorpay_order_id: order.id,
           razorpay_payment_id: payment.id,
           razorpay_signature: signature,
@@ -96,9 +129,13 @@ export default async function lifecycle({ container }: ExecArgs) {
     })
     const updated = await service.retrievePaymentSession(session.id)
     assert.equal(updated.data.order_id, order.id)
+    assert.equal(updated.data.session_id, session.id)
+    assert.equal(updated.data.amount, 12345)
+    assert.equal(updated.data.currency, "INR")
     assert.equal(updated.data.payment_id, payment.id)
     const native = await service.authorizePaymentSession(session.id, {})
     assert.ok(native)
+    nativePaymentId = native.id
     assert.equal(native.data.payment_id, payment.id)
     const replay = await service.authorizePaymentSession(session.id, {})
     assert.equal(replay!.id, native.id)
@@ -127,6 +164,17 @@ export default async function lifecycle({ container }: ExecArgs) {
         amount: 2,
         idempotency_key: "native_refund_lost",
       })
+    )
+    const activeAttempts = await service.listRefunds({ payment_id: native.id })
+    const allAttempts = await service.listRefunds(
+      { payment_id: native.id },
+      { filters: { [SoftDeletableFilterKey]: { withDeleted: true } } }
+    )
+    assert.equal(activeAttempts.length, 1)
+    assert.equal(
+      allAttempts.length,
+      2,
+      "Uncertain soft-deleted refund must remain visible to completion review"
     )
     await service.refundPayment({
       payment_id: native.id,
@@ -169,10 +217,51 @@ export default async function lifecycle({ container }: ExecArgs) {
       await service.getWebhookActionAndData(webhook),
       await service.getWebhookActionAndData(webhook)
     )
+    const competing = await Promise.allSettled([
+      service.refundPayment({
+        payment_id: native.id,
+        amount: 100,
+        idempotency_key: "concurrent_a",
+      }),
+      service.refundPayment({
+        payment_id: native.id,
+        amount: 100,
+        idempotency_key: "concurrent_b",
+      }),
+    ])
+    assert.equal(
+      competing.filter((r) => r.status === "fulfilled").length,
+      1,
+      "Only one competing refund may reserve the captured balance"
+    )
+    assert.equal(competing.filter((r) => r.status === "rejected").length, 1)
+    assert.equal(payment.amount_refunded, 10300)
+    await service.refundPayment({
+      payment_id: native.id,
+      amount: 20.45,
+      idempotency_key: "remaining_full_balance",
+    })
+    assert.equal(payment.amount_refunded, 12345)
+    saved = await service.retrievePayment(native.id, { relations: ["refunds"] })
+    assert.equal(saved.refunds.length, 4)
+    const postsAtCap = refundPosts
+    await assert.rejects(
+      service.refundPayment({
+        payment_id: native.id,
+        amount: 0.01,
+        idempotency_key: "past_full_balance",
+      })
+    )
+    assert.equal(
+      refundPosts,
+      postsAtCap,
+      "Unsupported sub-rupee refund must never reach the gateway"
+    )
     console.info(
-      "PASS native PostgreSQL: provider registration, session client isolation, authorization replay, one auto-capture, keyed refund replay, lost-response retry, amount guard and webhook replay mapping"
+      "PASS native PostgreSQL: provider registration, session client isolation, authorization replay, one auto-capture, keyed refund replay, lost-response retry, concurrent cumulative caps, full remaining balance and webhook replay mapping"
     )
   } finally {
     globalThis.fetch = realFetch
+    await observationDb.destroy()
   }
 }

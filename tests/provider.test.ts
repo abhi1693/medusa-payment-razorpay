@@ -48,6 +48,7 @@ beforeEach(() => {
     if (path === "payments/pay_123/refund")
       return {
         id: "rfnd_123",
+        payment_id: "pay_123",
         amount: 100,
         currency: "INR",
         status: "processed",
@@ -324,4 +325,285 @@ describe("gateway transport", () => {
     })
     fetchMock.mockRestore()
   })
+})
+
+describe("refund execution security boundary", () => {
+  const input = {
+    data,
+    amount: 1,
+    context: { idempotency_key: "guarded_refund" },
+  }
+  it("keeps all gateway verification and the refund behind the guard", async () => {
+    let allow!: () => void
+    let enter!: () => void
+    const allowed = new Promise<void>((resolve) => {
+      allow = resolve
+    })
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve
+    })
+    const guarded = new TestProvider(
+      {},
+      {
+        ...options,
+        refund_guard: async (context, execute) => {
+          expect(context).toEqual({ session_id: "payses_123" })
+          enter()
+          await allowed
+          return execute()
+        },
+      }
+    )
+    guarded.setGateway({ request: request as Gateway["request"] })
+    const operation = guarded.refundPayment(input)
+    await entered
+    expect(request).not.toHaveBeenCalled()
+    allow()
+    await expect(operation).resolves.toMatchObject({
+      data: {
+        last_refund_id: "rfnd_123",
+        last_refund_initial_status: "processed",
+      },
+    })
+    expect(
+      request.mock.calls.filter((c) => c[0].endsWith("/refund"))
+    ).toHaveLength(1)
+  })
+  it("makes no gateway request if coordination is rejected", async () => {
+    const guarded = new TestProvider(
+      {},
+      {
+        ...options,
+        refund_guard: async () => {
+          throw new Error("coordination unavailable")
+        },
+      }
+    )
+    guarded.setGateway({ request: request as Gateway["request"] })
+    await expect(guarded.refundPayment(input)).rejects.toThrow(
+      "coordination unavailable"
+    )
+    expect(request).not.toHaveBeenCalled()
+  })
+  it("propagates uncertain execution once and exits the guard", async () => {
+    const events: string[] = []
+    const original = request.getMockImplementation()!
+    request.mockImplementation(async (path: string) => {
+      if (path.endsWith("/refund"))
+        throw new Error("uncertain gateway response")
+      return original(path)
+    })
+    const guarded = new TestProvider(
+      {},
+      {
+        ...options,
+        refund_guard: async (_, execute) => {
+          events.push("entered")
+          try {
+            return await execute()
+          } finally {
+            events.push("exited")
+          }
+        },
+      }
+    )
+    guarded.setGateway({ request: request as Gateway["request"] })
+    await expect(guarded.refundPayment(input)).rejects.toThrow(
+      "uncertain gateway response"
+    )
+    expect(events).toEqual(["entered", "exited"])
+    expect(
+      request.mock.calls.filter((c) => c[0].endsWith("/refund"))
+    ).toHaveLength(1)
+  })
+  it.each([
+    { payment_id: "pay_foreign" },
+    { currency: "USD" },
+    { amount: 99 },
+    { id: "invalid" },
+    { status: "failed" },
+    { status: "unknown" },
+  ])(
+    "rejects an unbound or unaccepted refund response %o",
+    async (override) => {
+      const original = request.getMockImplementation()!
+      request.mockImplementation(async (path: string) =>
+        path.endsWith("/refund")
+          ? {
+              id: "rfnd_123",
+              payment_id: "pay_123",
+              amount: 100,
+              currency: "INR",
+              status: "processed",
+              ...override,
+            }
+          : original(path)
+      )
+      await expect(provider.refundPayment(input)).rejects.toThrow(
+        "not accepted"
+      )
+      expect(
+        request.mock.calls.filter((c) => c[0].endsWith("/refund"))
+      ).toHaveLength(1)
+    }
+  )
+  it.each([
+    { amount: "123.45", paise: 12345 },
+    { amount: "1.23", paise: 123 },
+  ])("passes exact full/partial paise values %o", async (value) => {
+    const original = request.getMockImplementation()!
+    request.mockImplementation(async (path: string) =>
+      path.endsWith("/refund")
+        ? {
+            id: "rfnd_123",
+            payment_id: "pay_123",
+            amount: value.paise,
+            currency: "INR",
+            status: "pending",
+          }
+        : original(path)
+    )
+    await expect(
+      provider.refundPayment({ ...input, amount: value.amount })
+    ).resolves.toMatchObject({
+      data: { last_refund_initial_status: "pending" },
+    })
+    expect(request).toHaveBeenCalledWith(
+      "payments/pay_123/refund",
+      { amount: value.paise, speed: "normal" },
+      expect.any(Object)
+    )
+  })
+})
+
+it.each([0.01, 0.5, 0.99])(
+  "rejects gateway-unsupported sub-rupee refund %s before any request",
+  async (amount) => {
+    await expect(
+      provider.refundPayment({
+        data,
+        amount,
+        context: { idempotency_key: "minimum_fixture" },
+      })
+    ).rejects.toThrow("at least INR 1.00")
+    expect(request).not.toHaveBeenCalled()
+  }
+)
+
+describe("payment attempt identity and retry safety", () => {
+  it("allows a signed retry after a terminal failed attempt on the same order", async () => {
+    request.mockImplementation(async (path: string) =>
+      path === "orders/order_123"
+        ? order
+        : path === "payments/pay_failed"
+          ? { ...payment, id: "pay_failed", status: "failed" }
+          : path === "payments/pay_retry"
+            ? { ...payment, id: "pay_retry" }
+            : undefined
+    )
+    const result = await provider.updatePayment({
+      data: {
+        ...data,
+        payment_id: "pay_failed",
+        client: {
+          razorpay_order_id: "order_123",
+          razorpay_payment_id: "pay_retry",
+          razorpay_signature: sign("order_123|pay_retry"),
+        },
+      },
+      amount: 123.45,
+      currency_code: "inr",
+    })
+    expect(result.data.payment_id).toBe("pay_retry")
+    expect(result.status).toBe("captured")
+  })
+  it.each(["authorized", "captured", "refunded"])(
+    "never silently replaces a previously %s attempt",
+    async (status) => {
+      request.mockImplementation(async (path: string) =>
+        path === "orders/order_123" ? order : { ...payment, status }
+      )
+      await expect(
+        provider.updatePayment({
+          data: {
+            ...data,
+            payment_id: "pay_123",
+            client: {
+              razorpay_order_id: "order_123",
+              razorpay_payment_id: "pay_retry",
+              razorpay_signature: sign("order_123|pay_retry"),
+            },
+          },
+          amount: 123.45,
+          currency_code: "inr",
+        })
+      ).rejects.toThrow("already in progress or settled")
+    }
+  )
+  it("does not mark a failed attempt paid and allows its unpaid session to be removed", async () => {
+    request.mockImplementation(async (path: string) =>
+      path === "orders/order_123"
+        ? order
+        : path === "orders/order_123/payments"
+          ? { items: [] }
+          : { ...payment, status: "failed" }
+    )
+    const input = { data: { ...data, payment_id: "pay_123" } }
+    expect((await provider.getPaymentStatus(input)).status).toBe("pending")
+    await expect(provider.cancelPayment(input)).resolves.toBeTruthy()
+  })
+  it("rejects gateway detail responses whose ID differs from the signed/requested payment", async () => {
+    request.mockImplementation(async (path: string) =>
+      path === "orders/order_123" ? order : { ...payment, id: "pay_other" }
+    )
+    await expect(
+      provider.authorizePayment({ data: { ...data, payment_id: "pay_123" } })
+    ).rejects.toThrow("identity mismatch")
+  })
+  it("rejects a webhook detail response for a different payment identity", async () => {
+    const raw = Buffer.from(
+      JSON.stringify({
+        event: "payment.captured",
+        payload: { payment: { entity: { id: "pay_123" } } },
+      })
+    )
+    request.mockResolvedValue({ ...payment, id: "pay_other" })
+    await expect(
+      provider.getWebhookActionAndData({
+        rawData: raw,
+        data: {},
+        headers: {
+          "x-razorpay-signature": sign(raw.toString(), options.webhook_secret!),
+        },
+      })
+    ).rejects.toThrow("identity mismatch")
+  })
+  it.each([0, 1.2, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects unsafe webhook amount %s",
+    async (amount) => {
+      const raw = Buffer.from(
+        JSON.stringify({
+          event: "payment.captured",
+          payload: { payment: { entity: { id: "pay_123" } } },
+        })
+      )
+      request.mockImplementation(async (path: string) =>
+        path === "payments/pay_123"
+          ? { ...payment, amount }
+          : { ...order, amount }
+      )
+      await expect(
+        provider.getWebhookActionAndData({
+          rawData: raw,
+          data: {},
+          headers: {
+            "x-razorpay-signature": sign(
+              raw.toString(),
+              options.webhook_secret!
+            ),
+          },
+        })
+      ).rejects.toThrow("webhook amount")
+    }
+  )
 })

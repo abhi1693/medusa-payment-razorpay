@@ -113,6 +113,8 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
       if (typeof id !== "string" || !/^pay_[A-Za-z0-9]+$/.test(id))
         throw new Error("Invalid gateway payment ID")
       const payment = await this.api.request<Entity>("payments/" + id)
+      if (payment.id !== id)
+        throw new Error("Gateway payment identity mismatch")
       this.checkPayment(d, payment)
       return payment
     }
@@ -244,11 +246,15 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     input: RefundPaymentInput
   ): Promise<RefundPaymentOutput> {
     const d = this.data(input)
+    const amount = minor(input.amount, d.currency)
+    // Razorpay's normal-refund API requires at least INR 1.00. Reject before
+    // gateway access instead of relying on native currency epsilon tolerances.
+    if (amount < 100)
+      throw new Error("Razorpay refunds require at least INR 1.00")
+    if (amount > d.amount) throw new Error("Refund exceeds payment amount")
     const p = await this.payment(d)
     if (!p || !["captured", "refunded"].includes(p.status))
       throw new Error("Payment has not been captured")
-    const amount = minor(input.amount, d.currency)
-    if (amount > d.amount) throw new Error("Refund exceeds payment amount")
     const key = input.context?.idempotency_key
     if (!key) throw new Error("Native refund idempotency key required")
     const idempotency = createHash("sha256")
@@ -310,6 +316,7 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     if (typeof id !== "string" || !/^pay_[A-Za-z0-9]+$/.test(id))
       throw new Error("Missing webhook payment")
     const p = await this.api.request<Entity>("payments/" + id)
+    if (p.id !== id) throw new Error("Webhook payment identity mismatch")
     if (!p.order_id || !/^order_[A-Za-z0-9]+$/.test(p.order_id))
       throw new Error("Invalid webhook order")
     const order = await this.api.request<Entity>("orders/" + p.order_id)
@@ -324,6 +331,8 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     }
     if (order.currency !== "INR")
       throw new Error("Unsupported gateway currency")
+    if (!Number.isSafeInteger(order.amount) || order.amount <= 0)
+      throw new Error("Invalid gateway webhook amount")
     this.checkPayment(d, p)
     // Ignore authorization-only events until auto-capture completes. Replays fetch current state.
     if (p.status !== "captured") return { action: "not_supported" }
