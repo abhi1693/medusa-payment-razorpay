@@ -249,13 +249,15 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
       throw new Error(
         "Refund was not accepted with the expected payment, amount and currency; reconcile using the same operation key"
       )
-    // Native refunds record the accepted operation. Pending is not bank settlement.
+    // This is an immutable response snapshot, not a refreshed settlement status.
+    const data = { ...d }
+    delete data.last_refund_status
     return {
       data: {
-        ...d,
+        ...data,
         payment_id: p.id,
         last_refund_id: refund.id,
-        last_refund_status: refund.status,
+        last_refund_initial_status: refund.status,
       },
     }
   }

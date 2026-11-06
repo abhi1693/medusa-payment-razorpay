@@ -46,7 +46,7 @@ Failed gateway attempts can be retried on the same order. A replacement attempt 
 
 ### Refund acceptance and settlement
 
-Full and partial INR refunds use the native Medusa refund amount and operation identity. The provider validates the gateway refund ID, payment association, exact paise amount, currency and acceptance status. Failed or unknown refund states are rejected. A `pending` response records an accepted refund request, not completed bank settlement; the latest returned gateway status is exposed as `last_refund_status` in native payment data. This field is informational, not a refund ledger or an automatically refreshed settlement status.
+Full and partial INR refunds use the native Medusa refund amount and operation identity. The provider validates the gateway refund ID, payment association, exact paise amount, currency and acceptance status. Failed or unknown refund states are rejected. A `pending` response records an accepted refund request, not completed bank settlement; the initial gateway response status is exposed as `last_refund_initial_status` in native payment data. This immutable response snapshot is informational, not a refund ledger or a current settlement status. Later gateway processing does not change it. Retrieve the referenced gateway refund for its current processing state.
 
 If a response is lost or inconsistent, reconcile the gateway operation before issuing another refund. Preserve the original native idempotency identity for a retry; a new operation identity represents a new monetary request. Out-of-band refunds and later refund failures are not automatically synchronized by the current payment webhook handler.
 
