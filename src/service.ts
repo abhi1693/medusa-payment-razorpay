@@ -10,6 +10,7 @@ import type {
   GetPaymentStatusInput,
   CapturePaymentInput,
   RefundPaymentInput,
+  RefundPaymentOutput,
   CancelPaymentInput,
   DeletePaymentInput,
   RetrievePaymentInput,
@@ -18,11 +19,16 @@ import type {
 } from "@medusajs/framework/types"
 import { RazorpayGateway, type Entity, type Gateway } from "./gateway"
 import { minor, verify } from "./security"
+export type RefundExecutionGuard = (
+  context: { session_id: string },
+  execute: () => Promise<RefundPaymentOutput>
+) => Promise<RefundPaymentOutput>
 export type Options = {
   mode: "test"
   key_id: string
   key_secret: string
   webhook_secret?: string
+  refund_guard?: RefundExecutionGuard
 }
 type Data = Record<string, unknown> & {
   order_id: string
@@ -49,6 +55,11 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
       !/^rzp_test_[A-Za-z0-9]+$/.test(options.key_id)
     )
       throw new Error("Razorpay requires test mode and a test key")
+    if (
+      options.refund_guard !== undefined &&
+      typeof options.refund_guard !== "function"
+    )
+      throw new Error("Razorpay refund guard must be a function")
     if (
       typeof options.key_secret !== "string" ||
       !options.key_secret.trim() ||
@@ -222,7 +233,16 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
       )
     return { data: { ...d, payment_id: p.id } }
   }
-  async refundPayment(input: RefundPaymentInput) {
+  async refundPayment(input: RefundPaymentInput): Promise<RefundPaymentOutput> {
+    const d = this.data(input)
+    const execute = () => this.refundAtGateway(input)
+    return this.options.refund_guard
+      ? this.options.refund_guard({ session_id: d.session_id }, execute)
+      : execute()
+  }
+  private async refundAtGateway(
+    input: RefundPaymentInput
+  ): Promise<RefundPaymentOutput> {
     const d = this.data(input)
     const p = await this.payment(d)
     if (!p || !["captured", "refunded"].includes(p.status))
