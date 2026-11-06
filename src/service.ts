@@ -244,11 +244,15 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     input: RefundPaymentInput
   ): Promise<RefundPaymentOutput> {
     const d = this.data(input)
+    const amount = minor(input.amount, d.currency)
+    // Razorpay's normal-refund API requires at least INR 1.00. Reject before
+    // gateway access instead of relying on native currency epsilon tolerances.
+    if (amount < 100)
+      throw new Error("Razorpay refunds require at least INR 1.00")
+    if (amount > d.amount) throw new Error("Refund exceeds payment amount")
     const p = await this.payment(d)
     if (!p || !["captured", "refunded"].includes(p.status))
       throw new Error("Payment has not been captured")
-    const amount = minor(input.amount, d.currency)
-    if (amount > d.amount) throw new Error("Refund exceeds payment amount")
     const key = input.context?.idempotency_key
     if (!key) throw new Error("Native refund idempotency key required")
     const idempotency = createHash("sha256")

@@ -55,3 +55,12 @@ Contract: https://github.com/razorpay/razorpay-node/blob/master/lib/types/refund
 ### Application refund coordination
 
 An optional server-side `refund_guard(context, execute)` function can wrap the entire refund verification/request path. The context contains the bound native session ID. It must return `execute()`'s result and propagate errors; a failed guard prevents the gateway request. Every native caller reaches this provider method, including Admin refunds, returns and compensation. Applications can coordinate this boundary with their own order-completion policy without modifying native Medusa routes or models. This extension alone does not create a native/gateway transaction or reconcile uncertain outcomes.
+
+Refund verification covers the native Medusa 2.22.2 runtime and the provider's
+2.22.4 build dependency. Refunds below INR 1.00 are rejected before gateway access,
+matching the [normal refund API](https://razorpay.com/docs/api/refunds/create-normal/).
+The [idempotent normal refund API](https://razorpay.com/docs/api/refunds/normal-refunds-idempotent/)
+requires replaying the same body and operation key; uncertain outcomes are never
+automatically retried by this provider. Native isolated tests include concurrent
+cumulative refund caps and refunding the exact remaining balance. They simulate
+the gateway and do not prove real gateway settlement.

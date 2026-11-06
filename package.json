@@ -20,7 +20,7 @@
     "prepack": "npm run build"
   },
   "peerDependencies": {
-    "@medusajs/framework": "2.22.4"
+    "@medusajs/framework": "2.22.2 || 2.22.4"
   },
   "dependencies": {},
   "devDependencies": {

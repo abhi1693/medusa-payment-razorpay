@@ -48,6 +48,7 @@ beforeEach(() => {
     if (path === "payments/pay_123/refund")
       return {
         id: "rfnd_123",
+        payment_id: "pay_123",
         amount: 100,
         currency: "INR",
         status: "processed",
@@ -325,3 +326,166 @@ describe("gateway transport", () => {
     fetchMock.mockRestore()
   })
 })
+
+describe("refund execution security boundary", () => {
+  const input = {
+    data,
+    amount: 1,
+    context: { idempotency_key: "guarded_refund" },
+  }
+  it("keeps all gateway verification and the refund behind the guard", async () => {
+    let allow!: () => void
+    let enter!: () => void
+    const allowed = new Promise<void>((resolve) => {
+      allow = resolve
+    })
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve
+    })
+    const guarded = new TestProvider(
+      {},
+      {
+        ...options,
+        refund_guard: async (context, execute) => {
+          expect(context).toEqual({ session_id: "payses_123" })
+          enter()
+          await allowed
+          return execute()
+        },
+      }
+    )
+    guarded.setGateway({ request: request as Gateway["request"] })
+    const operation = guarded.refundPayment(input)
+    await entered
+    expect(request).not.toHaveBeenCalled()
+    allow()
+    await expect(operation).resolves.toMatchObject({
+      data: {
+        last_refund_id: "rfnd_123",
+        last_refund_initial_status: "processed",
+      },
+    })
+    expect(
+      request.mock.calls.filter((c) => c[0].endsWith("/refund"))
+    ).toHaveLength(1)
+  })
+  it("makes no gateway request if coordination is rejected", async () => {
+    const guarded = new TestProvider(
+      {},
+      {
+        ...options,
+        refund_guard: async () => {
+          throw new Error("coordination unavailable")
+        },
+      }
+    )
+    guarded.setGateway({ request: request as Gateway["request"] })
+    await expect(guarded.refundPayment(input)).rejects.toThrow(
+      "coordination unavailable"
+    )
+    expect(request).not.toHaveBeenCalled()
+  })
+  it("propagates uncertain execution once and exits the guard", async () => {
+    const events: string[] = []
+    const original = request.getMockImplementation()!
+    request.mockImplementation(async (path: string) => {
+      if (path.endsWith("/refund"))
+        throw new Error("uncertain gateway response")
+      return original(path)
+    })
+    const guarded = new TestProvider(
+      {},
+      {
+        ...options,
+        refund_guard: async (_, execute) => {
+          events.push("entered")
+          try {
+            return await execute()
+          } finally {
+            events.push("exited")
+          }
+        },
+      }
+    )
+    guarded.setGateway({ request: request as Gateway["request"] })
+    await expect(guarded.refundPayment(input)).rejects.toThrow(
+      "uncertain gateway response"
+    )
+    expect(events).toEqual(["entered", "exited"])
+    expect(
+      request.mock.calls.filter((c) => c[0].endsWith("/refund"))
+    ).toHaveLength(1)
+  })
+  it.each([
+    { payment_id: "pay_foreign" },
+    { currency: "USD" },
+    { amount: 99 },
+    { id: "invalid" },
+    { status: "failed" },
+    { status: "unknown" },
+  ])(
+    "rejects an unbound or unaccepted refund response %o",
+    async (override) => {
+      const original = request.getMockImplementation()!
+      request.mockImplementation(async (path: string) =>
+        path.endsWith("/refund")
+          ? {
+              id: "rfnd_123",
+              payment_id: "pay_123",
+              amount: 100,
+              currency: "INR",
+              status: "processed",
+              ...override,
+            }
+          : original(path)
+      )
+      await expect(provider.refundPayment(input)).rejects.toThrow(
+        "not accepted"
+      )
+      expect(
+        request.mock.calls.filter((c) => c[0].endsWith("/refund"))
+      ).toHaveLength(1)
+    }
+  )
+  it.each([
+    { amount: "123.45", paise: 12345 },
+    { amount: "1.23", paise: 123 },
+  ])("passes exact full/partial paise values %o", async (value) => {
+    const original = request.getMockImplementation()!
+    request.mockImplementation(async (path: string) =>
+      path.endsWith("/refund")
+        ? {
+            id: "rfnd_123",
+            payment_id: "pay_123",
+            amount: value.paise,
+            currency: "INR",
+            status: "pending",
+          }
+        : original(path)
+    )
+    await expect(
+      provider.refundPayment({ ...input, amount: value.amount })
+    ).resolves.toMatchObject({
+      data: { last_refund_initial_status: "pending" },
+    })
+    expect(request).toHaveBeenCalledWith(
+      "payments/pay_123/refund",
+      { amount: value.paise, speed: "normal" },
+      expect.any(Object)
+    )
+  })
+})
+
+it.each([0.01, 0.5, 0.99])(
+  "rejects gateway-unsupported sub-rupee refund %s before any request",
+  async (amount) => {
+    await expect(
+      provider.refundPayment({
+        data,
+        amount,
+        context: { idempotency_key: "minimum_fixture" },
+      })
+    ).rejects.toThrow("at least INR 1.00")
+    expect(request).not.toHaveBeenCalled()
+  }
+)
