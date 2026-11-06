@@ -51,3 +51,7 @@ Full and partial INR refunds use the native Medusa refund amount and operation i
 If a response is lost or inconsistent, reconcile the gateway operation before issuing another refund. Preserve the original native idempotency identity for a retry; a new operation identity represents a new monetary request. Out-of-band refunds and later refund failures are not automatically synchronized by the current payment webhook handler.
 
 Contract: https://github.com/razorpay/razorpay-node/blob/master/lib/types/refunds.d.ts (reviewed 2026-11-06).
+
+### Application refund coordination
+
+An optional server-side `refund_guard(context, execute)` function can wrap the entire refund verification/request path. The context contains the bound native session ID. It must return `execute()`'s result and propagate errors; a failed guard prevents the gateway request. Every native caller reaches this provider method, including Admin refunds, returns and compensation. Applications can coordinate this boundary with their own order-completion policy without modifying native Medusa routes or models. This extension alone does not create a native/gateway transaction or reconcile uncertain outcomes.
