@@ -5,20 +5,20 @@ Uses native PaymentSession/Payment data and native capture/refund records. No cu
 
 ## Configuration
 
-Do not register the provider unless explicitly enabled. Keep secrets in your deployment's private environment, never frontend code or version control.
+Register the provider directly. Keep API credentials in the private backend environment, never frontend code or version control.
 
 ```ts
-...(process.env.RAZORPAY_ENABLED === "true" ? [{
+{
   resolve: "@medusajs/medusa/payment",
   options: { providers: [{
     resolve: "@abhi1693/medusa-payment-razorpay", id: "razorpay",
-    options: { enabled: true, mode: "test", key_id: process.env.RAZORPAY_KEY_ID,
+    options: { mode: "test", key_id: process.env.RAZORPAY_KEY_ID,
       key_secret: process.env.RAZORPAY_KEY_SECRET, webhook_secret: process.env.RAZORPAY_WEBHOOK_SECRET }
   }] }
-}] : [])
+}
 ```
 
-Enable `pp_razorpay_razorpay` only in the intended test region after separate operator activation. Automatic capture must already be configured in the test account. This plugin never changes account settings and never sends a capture POST. Authorization completes only after gateway status is captured. It rejects unsupported currencies, invalid precision and live key IDs.
+The native provider ID is `pp_razorpay_razorpay`. Registration makes it available in native region settings; it does not assign it to a region. There is no enable/disable environment toggle. Test API credentials are required at startup. The webhook secret is optional for basic Admin setup; incoming webhooks fail closed until it is configured. Automatic capture must already be configured in the test account. This plugin never changes account settings or sends a capture POST. Authorization completes only after gateway status is captured. Unsupported currencies, invalid precision and live key IDs are rejected.
 
 Checkout results must be submitted using Medusa's Store payment-session client-data endpoint (`data.client`). The provider checks the stored order ID, HMAC, fetched gateway payment/order, amount, currency and session note. Session data is public-safe; do not store secrets there.
 

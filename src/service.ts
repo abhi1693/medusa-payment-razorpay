@@ -19,11 +19,10 @@ import type {
 import { RazorpayGateway, type Entity, type Gateway } from "./gateway"
 import { minor, verify } from "./security"
 export type Options = {
-  enabled: boolean
   mode: "test"
   key_id: string
   key_secret: string
-  webhook_secret: string
+  webhook_secret?: string
 }
 type Data = Record<string, unknown> & {
   order_id: string
@@ -45,19 +44,17 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
   }
   static validateOptions(options: Record<string, unknown>) {
     if (
-      options.enabled !== true ||
       options.mode !== "test" ||
       typeof options.key_id !== "string" ||
       !/^rzp_test_[A-Za-z0-9]+$/.test(options.key_id)
     )
-      throw new Error(
-        "Razorpay requires explicit enabled test mode and a test key"
-      )
+      throw new Error("Razorpay requires test mode and a test key")
     if (
       typeof options.key_secret !== "string" ||
       !options.key_secret.trim() ||
-      typeof options.webhook_secret !== "string" ||
-      !options.webhook_secret.trim()
+      (options.webhook_secret !== undefined &&
+        (typeof options.webhook_secret !== "string" ||
+          !options.webhook_secret.trim()))
     )
       throw new Error("Razorpay test secrets must be configured privately")
   }
@@ -246,6 +243,8 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
   async getWebhookActionAndData(
     payload: ProviderWebhookPayload["payload"]
   ): Promise<WebhookActionResult> {
+    if (!this.options.webhook_secret)
+      throw new Error("Razorpay webhooks are not configured")
     verify(
       payload.rawData,
       payload.headers["x-razorpay-signature"],
