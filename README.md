@@ -43,3 +43,11 @@ The native lifecycle fixture in `tests/native` is run in the consuming applicati
 This repository has no checkout UI, merchant acceptance policy, or application-specific routes. Those belong to the consuming application. A production release, account activation and real gateway verification are separate review gates.
 
 Failed gateway attempts can be retried on the same order. A replacement attempt is accepted only after the prior bound attempt is terminally failed; authorized, captured or refunded associations are never silently rebound. Session updates include the public gateway_status so the consuming checkout can distinguish an unpaid/failed order from one awaiting automatic capture.
+
+### Refund acceptance and settlement
+
+Full and partial INR refunds use the native Medusa refund amount and operation identity. The provider validates the gateway refund ID, payment association, exact paise amount, currency and acceptance status. Failed or unknown refund states are rejected. A `pending` response records an accepted refund request, not completed bank settlement; the latest returned gateway status is exposed as `last_refund_status` in native payment data. This field is informational, not a refund ledger or an automatically refreshed settlement status.
+
+If a response is lost or inconsistent, reconcile the gateway operation before issuing another refund. Preserve the original native idempotency identity for a retry; a new operation identity represents a new monetary request. Out-of-band refunds and later refund failures are not automatically synchronized by the current payment webhook handler.
+
+Contract: https://github.com/razorpay/razorpay-node/blob/master/lib/types/refunds.d.ts (reviewed 2026-11-06).

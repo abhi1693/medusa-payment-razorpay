@@ -239,11 +239,25 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
       { amount, speed: "normal" },
       { "X-Refund-Idempotency": idempotency }
     )
-    if (refund.amount !== amount)
+    if (
+      !/^rfnd_[A-Za-z0-9]+$/.test(refund.id) ||
+      refund.payment_id !== p.id ||
+      refund.amount !== amount ||
+      refund.currency !== d.currency ||
+      !["pending", "processed"].includes(refund.status)
+    )
       throw new Error(
-        "Refund response amount mismatch; reconcile using the same operation key"
+        "Refund was not accepted with the expected payment, amount and currency; reconcile using the same operation key"
       )
-    return { data: { ...d, payment_id: p.id, last_refund_id: refund.id } }
+    // Native refunds record the accepted operation. Pending is not bank settlement.
+    return {
+      data: {
+        ...d,
+        payment_id: p.id,
+        last_refund_id: refund.id,
+        last_refund_status: refund.status,
+      },
+    }
   }
   async cancelPayment(input: CancelPaymentInput) {
     const d = this.data(input)
