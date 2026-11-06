@@ -113,6 +113,8 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
       if (typeof id !== "string" || !/^pay_[A-Za-z0-9]+$/.test(id))
         throw new Error("Invalid gateway payment ID")
       const payment = await this.api.request<Entity>("payments/" + id)
+      if (payment.id !== id)
+        throw new Error("Gateway payment identity mismatch")
       this.checkPayment(d, payment)
       return payment
     }
@@ -314,6 +316,7 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     if (typeof id !== "string" || !/^pay_[A-Za-z0-9]+$/.test(id))
       throw new Error("Missing webhook payment")
     const p = await this.api.request<Entity>("payments/" + id)
+    if (p.id !== id) throw new Error("Webhook payment identity mismatch")
     if (!p.order_id || !/^order_[A-Za-z0-9]+$/.test(p.order_id))
       throw new Error("Invalid webhook order")
     const order = await this.api.request<Entity>("orders/" + p.order_id)
@@ -328,6 +331,8 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     }
     if (order.currency !== "INR")
       throw new Error("Unsupported gateway currency")
+    if (!Number.isSafeInteger(order.amount) || order.amount <= 0)
+      throw new Error("Invalid gateway webhook amount")
     this.checkPayment(d, p)
     // Ignore authorization-only events until auto-capture completes. Replays fetch current state.
     if (p.status !== "captured") return { action: "not_supported" }

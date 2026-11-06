@@ -489,3 +489,121 @@ it.each([0.01, 0.5, 0.99])(
     expect(request).not.toHaveBeenCalled()
   }
 )
+
+describe("payment attempt identity and retry safety", () => {
+  it("allows a signed retry after a terminal failed attempt on the same order", async () => {
+    request.mockImplementation(async (path: string) =>
+      path === "orders/order_123"
+        ? order
+        : path === "payments/pay_failed"
+          ? { ...payment, id: "pay_failed", status: "failed" }
+          : path === "payments/pay_retry"
+            ? { ...payment, id: "pay_retry" }
+            : undefined
+    )
+    const result = await provider.updatePayment({
+      data: {
+        ...data,
+        payment_id: "pay_failed",
+        client: {
+          razorpay_order_id: "order_123",
+          razorpay_payment_id: "pay_retry",
+          razorpay_signature: sign("order_123|pay_retry"),
+        },
+      },
+      amount: 123.45,
+      currency_code: "inr",
+    })
+    expect(result.data.payment_id).toBe("pay_retry")
+    expect(result.status).toBe("captured")
+  })
+  it.each(["authorized", "captured", "refunded"])(
+    "never silently replaces a previously %s attempt",
+    async (status) => {
+      request.mockImplementation(async (path: string) =>
+        path === "orders/order_123" ? order : { ...payment, status }
+      )
+      await expect(
+        provider.updatePayment({
+          data: {
+            ...data,
+            payment_id: "pay_123",
+            client: {
+              razorpay_order_id: "order_123",
+              razorpay_payment_id: "pay_retry",
+              razorpay_signature: sign("order_123|pay_retry"),
+            },
+          },
+          amount: 123.45,
+          currency_code: "inr",
+        })
+      ).rejects.toThrow("already in progress or settled")
+    }
+  )
+  it("does not mark a failed attempt paid and allows its unpaid session to be removed", async () => {
+    request.mockImplementation(async (path: string) =>
+      path === "orders/order_123"
+        ? order
+        : path === "orders/order_123/payments"
+          ? { items: [] }
+          : { ...payment, status: "failed" }
+    )
+    const input = { data: { ...data, payment_id: "pay_123" } }
+    expect((await provider.getPaymentStatus(input)).status).toBe("pending")
+    await expect(provider.cancelPayment(input)).resolves.toBeTruthy()
+  })
+  it("rejects gateway detail responses whose ID differs from the signed/requested payment", async () => {
+    request.mockImplementation(async (path: string) =>
+      path === "orders/order_123" ? order : { ...payment, id: "pay_other" }
+    )
+    await expect(
+      provider.authorizePayment({ data: { ...data, payment_id: "pay_123" } })
+    ).rejects.toThrow("identity mismatch")
+  })
+  it("rejects a webhook detail response for a different payment identity", async () => {
+    const raw = Buffer.from(
+      JSON.stringify({
+        event: "payment.captured",
+        payload: { payment: { entity: { id: "pay_123" } } },
+      })
+    )
+    request.mockResolvedValue({ ...payment, id: "pay_other" })
+    await expect(
+      provider.getWebhookActionAndData({
+        rawData: raw,
+        data: {},
+        headers: {
+          "x-razorpay-signature": sign(raw.toString(), options.webhook_secret!),
+        },
+      })
+    ).rejects.toThrow("identity mismatch")
+  })
+  it.each([0, 1.2, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects unsafe webhook amount %s",
+    async (amount) => {
+      const raw = Buffer.from(
+        JSON.stringify({
+          event: "payment.captured",
+          payload: { payment: { entity: { id: "pay_123" } } },
+        })
+      )
+      request.mockImplementation(async (path: string) =>
+        path === "payments/pay_123"
+          ? { ...payment, amount }
+          : { ...order, amount }
+      )
+      await expect(
+        provider.getWebhookActionAndData({
+          rawData: raw,
+          data: {},
+          headers: {
+            "x-razorpay-signature": sign(
+              raw.toString(),
+              options.webhook_secret!
+            ),
+          },
+        })
+      ).rejects.toThrow("webhook amount")
+    }
+  )
+})
