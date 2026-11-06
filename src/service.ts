@@ -173,7 +173,10 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     const p = await this.payment(d)
     return {
       data: { ...d, ...(p ? { payment_id: p.id } : {}) },
-      status: this.statusOf(p),
+      status:
+        p?.status === "captured"
+          ? PaymentSessionStatus.CAPTURED
+          : PaymentSessionStatus.PENDING,
     }
   }
   async authorizePayment(input: AuthorizePaymentInput) {
