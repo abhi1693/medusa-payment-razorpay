@@ -1,0 +1,12 @@
+services:
+  tools:
+    build: .
+    network_mode: none
+  bootstrap:
+    image: node:24.21.0-bookworm-slim
+    working_dir: /plugin
+    user: "1000:1000"
+    volumes: [".:/plugin"]
+    environment:
+      npm_config_cache: /tmp/npm-cache
+    profiles: [tools]

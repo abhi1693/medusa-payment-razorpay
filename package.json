@@ -1,0 +1,39 @@
+{
+  "name": "@abhi1693/medusa-payment-razorpay",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "format:check": "prettier --check src tests",
+    "format": "prettier --write src tests",
+    "prepare": "npm run build",
+    "prepack": "npm run build"
+  },
+  "peerDependencies": {
+    "@medusajs/framework": "2.22.2"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@medusajs/framework": "2.22.2",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "4.1.12",
+    "prettier": "3.9.10"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  }
+}
