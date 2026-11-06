@@ -5,7 +5,6 @@ import Provider, { type Options } from "../src/service"
 import { minor, verify } from "../src/security"
 import { RazorpayGateway, type Entity, type Gateway } from "../src/gateway"
 const options: Options = {
-  enabled: true,
   mode: "test",
   key_id: "rzp_test_fixture",
   key_secret: "fixture_secret",
@@ -81,7 +80,6 @@ describe("INR amount and signatures", () => {
 })
 describe("configuration", () => {
   it.each([
-    { enabled: false },
     { mode: "live" },
     { key_id: "rzp_live_fixture" },
     { key_secret: "" },
@@ -92,6 +90,17 @@ describe("configuration", () => {
     ).toThrow()
   )
 })
+it("allows basic registration without webhook setup and fails closed for delivery", async () => {
+  const basic = new TestProvider({}, { ...options, webhook_secret: undefined })
+  await expect(
+    basic.getWebhookActionAndData({
+      rawData: Buffer.from("{}"),
+      data: {},
+      headers: {},
+    })
+  ).rejects.toThrow("webhooks are not configured")
+})
+
 describe("native provider lifecycle", () => {
   it("creates public-safe gateway session from trusted totals", async () => {
     const result = await provider.initiatePayment({
