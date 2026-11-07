@@ -18,3 +18,11 @@ export {
 
 export { importRazorpayRefund } from "./refund-import"
 export type { RefundImportOptions } from "./refund-import"
+
+export {
+  reconcileRazorpayRefund,
+  RAZORPAY_REFUND_RECOVERY_EVENT,
+  REFUND_RECOVERY_DELAY_MS,
+} from "./refund-recovery"
+export type { RefundRecoveryEvent } from "./refund-recovery"
+export { PendingRefundRecoveryError } from "./refund-recovery-error"

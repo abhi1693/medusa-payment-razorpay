@@ -12,6 +12,7 @@ import {
   OrderChangeType,
   ChangeActionType,
   PaymentEvents,
+  MedusaError,
 } from "@medusajs/framework/utils"
 import {
   gatewayReader,
@@ -19,6 +20,7 @@ import {
   type ReconciliationOptions,
 } from "./reconciliation"
 import { record } from "./records"
+import { PendingRefundRecoveryError } from "./refund-recovery-error"
 import { observedRefundExecution } from "./refund-import-context"
 
 export type RefundImportOptions = ReconciliationOptions & {
@@ -264,24 +266,35 @@ export async function importRazorpayRefund(
       Number(credit) > Number(refund.amount)
     )
       throw new Error("Invalid persisted import accounting intent")
-    if (!existing) {
-      await observedRefundExecution.run({ session, key }, () =>
-        payments.refundPayment({
-          payment_id: nativeId,
-          amount: major(Number(refund.amount)),
-          idempotency_key: key,
-          note: "Verified Razorpay Dashboard refund",
-          metadata: {
-            razorpay_import: {
-              gateway_refund_id: event.refund_id,
-              gateway_payment_id: event.payment_id,
-              order_id: orderId,
-              amount_paise: refund.amount,
-              credit_paise: credit,
+    const resumePending = !!existing && record(existing).status === "pending"
+    if (!existing || resumePending) {
+      try {
+        await observedRefundExecution.run({ session, key }, () =>
+          payments.refundPayment({
+            payment_id: nativeId,
+            amount: major(Number(refund.amount)),
+            idempotency_key: key,
+            note: "Verified Razorpay Dashboard refund",
+            metadata: {
+              razorpay_import: {
+                gateway_refund_id: event.refund_id,
+                gateway_payment_id: event.payment_id,
+                order_id: orderId,
+                amount_paise: refund.amount,
+                credit_paise: credit,
+              },
             },
-          },
-        })
-      )
+          })
+        )
+      } catch (error) {
+        if (
+          resumePending &&
+          error instanceof MedusaError &&
+          error.type === MedusaError.Types.CONFLICT
+        )
+          throw new PendingRefundRecoveryError()
+        throw error
+      }
       const updated = await payments.retrievePayment(nativeId, {
         ...fresh,
         relations: ["refunds"],

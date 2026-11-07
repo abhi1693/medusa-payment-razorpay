@@ -1,4 +1,6 @@
 import { beforeEach, afterEach, expect, it, vi } from "vitest"
+import { MedusaError } from "@medusajs/framework/utils"
+import { PendingRefundRecoveryError } from "../src/refund-recovery-error"
 import { createHash } from "node:crypto"
 import { importRazorpayRefund } from "../src/refund-import"
 import RazorpayProvider from "../src/service"
@@ -338,10 +340,13 @@ it("retains a pending native reservation for review instead of deleting or dupli
       metadata: { razorpay_import: { credit_paise: 1000 } },
     },
   ]
-  await expect(importRazorpayRefund(scope, event, options)).rejects.toThrow(
-    "not completed"
+  payments.refundPayment.mockRejectedValue(
+    new MedusaError(MedusaError.Types.CONFLICT, "in progress")
   )
-  expect(payments.refundPayment).not.toHaveBeenCalled()
+  await expect(
+    importRazorpayRefund(scope, event, options)
+  ).rejects.toBeInstanceOf(PendingRefundRecoveryError)
+  expect(payments.refundPayment).toHaveBeenCalledTimes(1)
   expect(order.transactions).toHaveLength(0)
   expect(posts).toBe(0)
 })
