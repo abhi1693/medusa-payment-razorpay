@@ -37,13 +37,26 @@ jobs:
           test "${registry%/}" = "https://registry.npmjs.org"
       - run: docker compose build tools
       - run: docker compose run --rm tools npm run "${{ matrix.check }}"
+      - name: Load shared archive verifier
+        if: matrix.check == 'package:check'
+        id: release-tools
+        uses: abhi1693/actions/.github/actions/npm-release@428c8e48880754633e3b4e4f1c90c3fdc876effa # v1.1.2
+      - name: Verify actual release archive
+        if: matrix.check == 'package:check'
+        env:
+          TOOLS: ${{ steps.release-tools.outputs.path }}
+        run: >-
+          docker compose run --rm -v "$TOOLS:/release-tools:ro"
+          -e PACKAGE_NAME=@abhi1693/medusa-payment-razorpay tools
+          sh -ec 'npm run build && node /release-tools/package.mjs --check-only'
+
   node-checks:
     name: ${{ matrix.check }}
     strategy:
       fail-fast: false
       matrix:
         check: [lint, typecheck, build]
-    uses: abhi1693/actions/.github/workflows/node-ci.yml@4bc25a3100cbfbece517ddad161d59d13c029675 # v1.0.5
+    uses: abhi1693/actions/.github/workflows/node-ci.yml@v1
     with:
       node-version: "24.21.0"
       checks: ${{ format('["{0}"]', matrix.check) }}
@@ -51,7 +64,7 @@ jobs:
       ignore-scripts: true
       enable-cache: false
   security:
-    uses: abhi1693/actions/.github/workflows/security.yml@4bc25a3100cbfbece517ddad161d59d13c029675 # v1.0.5
+    uses: abhi1693/actions/.github/workflows/security.yml@v1
     with:
       secret-scan: true
       workflow-lint: true

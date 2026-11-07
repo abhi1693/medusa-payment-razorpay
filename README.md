@@ -1,5 +1,7 @@
 # Medusa Razorpay
 
+[![CI](https://github.com/abhi1693/medusa-payment-razorpay/actions/workflows/ci.yaml/badge.svg?branch=master)](https://github.com/abhi1693/medusa-payment-razorpay/actions/workflows/ci.yaml)
+
 [![Medusa 2.22.2 / 2.22.4](https://img.shields.io/badge/Medusa-2.22.2%20%7C%202.22.4-7c3aed)](https://docs.medusajs.com/)
 [![MIT license](https://img.shields.io/github/license/abhi1693/medusa-payment-razorpay)](LICENSE)
 [![Sponsor](https://img.shields.io/badge/Sponsor-abhi1693-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/abhi1693)
@@ -104,25 +106,7 @@ The exported reconciliation helpers compare authenticated gateway payment/order/
 
 Read [operations and validation](docs/operations.md) for pending/failed refund handling, uncertain outcomes, monitoring and test limits. The exported `assessRazorpayRefundRecovery` and `recoverRazorpayRefund` helpers provide a controlled operator path for supported processed-refund imports, with reviewed snapshots, application-enforced maintenance controls and post-recovery accounting checks. Original pending reservations remain quarantined. Known incomplete canonical accounting requires the operator path; automatic takeover scheduling is disabled.
 
-## Development
-
-Use the repository's Docker Compose tools service:
-
-```sh
-docker compose build tools
-docker compose run --rm tools npm run typecheck
-docker compose run --rm tools npm test
-docker compose run --rm tools npm run build
-docker compose run --rm tools npm run format:check
-```
-
-The image installs the committed lockfile with `npm ci`; the tools container has no network access. Automated gateway tests are simulated and do not create Razorpay payments or refunds. Native lifecycle fixtures require an isolated consuming Medusa CI environment; see [validation scope](docs/operations.md#validation-scope).
-
-## License
-
-[MIT](LICENSE) © Abhimanyu Saharan.
-
-### Logging
+## Logging
 
 Set provider option `log_level` to `debug`, `info` (default), `warning`, `error`, `critical`, or `none`. Thresholds include the selected level and higher severities. `none` emits no plugin log records. JSON records contain `level`, a clear `message`, and `context`. The simple shared logger uses Medusa's injected logger, with a console fallback. Warning uses the `warn` sink; critical uses `error` while retaining its JSON severity.
 
@@ -130,13 +114,13 @@ All API calls use one typed HTTP client with `get`, `post`, `put`, `patch` and `
 
 Debug records receive the complete request body and provider response, including unknown response keys. There is no provider-field extraction or event-schema framework. Authentication headers are never supplied to the logger. Redaction is intentionally not implemented for the current debugging stage. Raw debug bodies can contain personal or sensitive data. Restrict access and retention, and use test data. Keep live deployments at `info` or higher (or `none`); raw `debug` payloads are not suitable for routine live logging. Authentication headers and configured credentials are not intentionally added to log context; an upstream response or caller-supplied body can still contain sensitive values. Other levels omit request/response bodies.
 
-### Common API client
+## Common API client
 
 `RazorpayGateway` takes a named `GatewayOptions` object with explicit `mode`, matching credentials, optional Medusa logger, log level, timeout and injectable `fetch` for isolated testing. The base host is fixed, redirects are rejected, authentication cannot be overridden by custom headers, and timeout is bounded at 15 seconds. Reconciliation uses its GET-only adapter with a 30-second aggregate deadline. The compatibility `request` method delegates to the same executor; plugin internals use explicit verbs.
 
 `GatewayRequestError` has typed method, failure kind and optional HTTP status. Transport failures are generic; response errors remain distinct from HTTP errors. No HTTP method retries automatically. `reconciliation_required` is a precaution on failed writes, not proof of a mismatch or a completed reconciliation. GET failures set it false. A successful HTTP response does not establish refund settlement.
 
-### Development checks
+## Development
 
 Run project commands through Docker Compose:
 
@@ -156,7 +140,7 @@ Typecheck validates both the published source and unit tests. The test project m
 
 The GitHub workflow runs formatting, lint, typecheck and build as separately visible checks, reusing the pinned Node CI and security workflows from `abhi1693/actions`. Each unit suite runs independently in its own matrix job and uploads JUnit XML. Reproduce a selected suite locally with `docker compose run --rm tools npm test -- tests/http-client.test.ts`. These self-contained suites use mocked gateway/service fixtures and do not perform gateway transactions. Hosted results and consuming-application integration evidence remain separate from local unit checks.
 
-### Rejected refund requests
+## Rejected refund requests
 
 A refund POST rejected with HTTP 400 raises `RazorpayRefundRejectedError`
 (`invalid_data`, code `razorpay_refund_rejected`). Medusa Admin can show its
@@ -169,6 +153,10 @@ the provider never retries a refund automatically.
 
 The `0.0.1` artifact includes compiled JavaScript, TypeScript declarations, the license, README and integration/operations guides. `package:check` builds and packs it locally, checks its contents, loads its public exports and compiles a consumer against its packed declarations. CI runs this as an independent check without publishing. Release notes belong to the GitHub release.
 
-`ci.yaml` is displayed as **CI** and runs on every push and pull request, plus reusable/manual invocations. `release.yml` prepares an exact committed package version through the shared `abhi1693/actions@v1` workflow after CI passes. Preparation builds and checks the package, signs the exact archive and creates a draft GitHub release containing the archive, checksums and provenance. It does not publish to npm. Commit matching `package.json` and lockfile versions and add `docs/releases/VERSION.md` notes before dispatching preparation.
+`ci.yaml` is displayed as **CI** and runs on every push and pull request, plus reusable/manual invocations. `release.yml` prepares an exact committed package version through the shared `abhi1693/actions@v1` workflow after CI passes. Preparation builds and checks the package, signs the exact archive and creates a draft GitHub release containing the archive, checksums and provenance. It does not publish to npm. Commit matching `package.json` and lockfile versions before dispatching preparation. Optional `docs/releases/VERSION.md` notes override GitHub-generated draft notes.
 
 Publishing the stable GitHub release triggers `publish.yaml`. The shared publisher verifies the release source, archive checksum and preparation attestation, then publishes that same archive using npm OIDC. Its manual dispatch accepts a published tag for recovery from `master`; it does not rebuild the archive. Before publication, the owner must establish npm package ownership and configure the trusted publisher for `abhi1693/medusa-payment-razorpay`, workflow `publish.yaml`, environment `npm-publish`, and allow direct `npm publish`. Configure environment review protection separately. No registry token is stored by this repository. See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/). Existing releases without shared-workflow assets and provenance cannot use this publisher.
+
+## License
+
+[MIT](LICENSE) © Abhimanyu Saharan.
