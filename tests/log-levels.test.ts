@@ -187,3 +187,119 @@ it("preserves injected Medusa debug and error sinks", async () => {
     http_status: 401,
   })
 })
+
+it("logs safe request and response projections only at debug", async () => {
+  for (const level of ["debug", "info", "none"] as const) {
+    const sink = vi.fn()
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "BAD_REQUEST_ERROR",
+              description: "invalid request sent",
+              source: "NA",
+              step: "NA",
+              reason: "NA",
+              field: "private@example.com",
+              metadata: { email: "private@example.com", secret: "secret" },
+            },
+            email: "private@example.com",
+          }),
+          { status: 400, headers: { "x-request-id": "sensitive_id" } }
+        )
+      )
+    )
+    const gateway = new RazorpayGateway(
+      "rzp_test_private",
+      "secret",
+      { debug: sink, info: sink, warn: sink, error: sink },
+      level
+    )
+    await expect(
+      gateway.request(
+        "payments/pay_private/refund",
+        {
+          amount: 2889500,
+          speed: "normal",
+          notes: {
+            medusa_payment_session_id: "payses_private",
+            medusa_refund_key: "secret",
+            email: "private@example.com",
+          },
+        },
+        { "X-Refund-Idempotency": "private_key" },
+        "create_refund"
+      )
+    ).rejects.toThrow()
+    const logs = sink.mock.calls.map((c) => JSON.parse(c[0]))
+    if (level === "debug") {
+      expect(
+        logs.find((x) => x.outcome === "request_projection")
+      ).toMatchObject({
+        body_amount_paise: 2889500,
+        body_speed: "normal",
+        body_notes_count: 3,
+        body_idempotency_present: true,
+        body_idempotency_length: 11,
+        body_session_note_present: true,
+      })
+      expect(
+        logs.find((x) => x.outcome === "response_projection")
+      ).toMatchObject({
+        http_status: 400,
+        provider_code: "BAD_REQUEST_ERROR",
+        category: "invalid_request",
+        provider_source: "NA",
+        provider_step: "NA",
+        provider_reason: "NA",
+        provider_metadata_count: 2,
+        response_request_id_present: true,
+      })
+    } else
+      expect(logs.some((x) => x.outcome.endsWith("projection"))).toBe(false)
+    if (level === "none") expect(sink).not.toHaveBeenCalled()
+    expect(JSON.stringify(logs)).not.toMatch(
+      /private|secret|sensitive_id|payses_|pay_private|invalid request sent/
+    )
+  }
+})
+it("drops unsafe response classifications and never echoes a successful refund identity", async () => {
+  const sink = vi.fn()
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "rfnd_private",
+          status: "processed",
+          amount: 100,
+          currency: "INR",
+          speed_processed: "normal",
+          email: "private@example.com",
+          error: {
+            source: "private@example.com",
+            reason: "secret",
+            step: "https://private",
+          },
+        })
+      )
+    )
+  )
+  await new RazorpayGateway(
+    "key",
+    "secret",
+    { debug: sink, info: sink },
+    "debug"
+  ).request("opaque", {}, undefined, "create_refund")
+  const logs = sink.mock.calls.map((c) => JSON.parse(c[0]))
+  expect(logs.find((x) => x.outcome === "response_projection")).toMatchObject({
+    response_amount_paise: 100,
+    response_currency: "INR",
+    response_refund_status: "processed",
+    response_speed: "normal",
+    response_identity_present: true,
+  })
+  expect(JSON.stringify(logs)).not.toMatch(/private|secret|https/)
+})

@@ -1,4 +1,8 @@
 import {
+  refundRequestProjection,
+  gatewayResponseProjection,
+} from "./diagnostic-projections"
+import {
   diagnostics,
   gatewayLogEvent,
   type DiagnosticLogger,
@@ -69,6 +73,11 @@ export class RazorpayGateway implements Gateway {
         duration_ms: Math.max(0, Date.now() - started),
       })
     emit("debug", { outcome: "started" })
+    if (action === "create_refund" && body !== undefined)
+      emit("debug", {
+        outcome: "request_projection",
+        ...refundRequestProjection(body, headers),
+      })
     let response: Response
     try {
       response = await fetch("https://api.razorpay.com/v1/" + path, {
@@ -118,6 +127,15 @@ export class RazorpayGateway implements Gateway {
     }
     if (!response.ok) {
       const detail = await response.json().catch(() => undefined)
+      emit("debug", {
+        outcome: "response_projection",
+        http_status: response.status,
+        ...gatewayResponseProjection(
+          detail,
+          response.headers.has("x-razorpay-request-id") ||
+            response.headers.has("x-request-id")
+        ),
+      })
       emit(
         response.status === 401 || response.status === 403
           ? "critical"
@@ -148,6 +166,15 @@ export class RazorpayGateway implements Gateway {
         "Razorpay response invalid; reconcile gateway state before retrying"
       )
     }
+    emit("debug", {
+      outcome: "response_projection",
+      http_status: response.status,
+      ...gatewayResponseProjection(
+        result,
+        response.headers.has("x-razorpay-request-id") ||
+          response.headers.has("x-request-id")
+      ),
+    })
     if (body !== undefined)
       emit("info", {
         outcome: "response_received",

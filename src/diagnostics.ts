@@ -38,6 +38,12 @@ export const logFields = {
       ? value
       : undefined) as Field,
   // Provider codes have their own bounded syntax; descriptions and metadata are never accepted.
+  token: ((value: unknown) =>
+    typeof value === "string" &&
+    /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(value) &&
+    !sensitive.test(value)
+      ? value
+      : undefined) as Field,
   code: ((value: unknown) =>
     typeof value === "string" &&
     /^[A-Z][A-Z0-9_]{1,47}$/.test(value) &&
@@ -65,6 +71,27 @@ export const gatewayLogEvent = defineLogEvent("razorpay.gateway", {
   http_status: number,
   duration_ms: number,
   reconciliation_required: logFields.boolean,
+  body_amount_paise: number,
+  body_field_count: number,
+  body_notes_count: number,
+  body_speed: logFields.token,
+  body_currency: logFields.token,
+  body_receipt_present: logFields.boolean,
+  body_idempotency_present: logFields.boolean,
+  body_idempotency_length: number,
+  body_session_note_present: logFields.boolean,
+  body_operation_note_present: logFields.boolean,
+  response_amount_paise: number,
+  response_currency: logFields.token,
+  response_refund_status: logFields.token,
+  response_speed: logFields.token,
+  response_identity_present: logFields.boolean,
+  response_request_id_present: logFields.boolean,
+  provider_source: logFields.token,
+  provider_step: logFields.token,
+  provider_reason: logFields.token,
+  provider_field_present: logFields.boolean,
+  provider_metadata_count: number,
 })
 export const lifecycleLogEvent = defineLogEvent("razorpay.lifecycle", {
   operation: label,
