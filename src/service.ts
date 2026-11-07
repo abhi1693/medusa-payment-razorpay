@@ -1,3 +1,7 @@
+import {
+  acknowledgeProcessedRefund,
+  refundAcknowledgementReader,
+} from "./refund-acknowledgement"
 import { inrMajorUnits } from "./amounts"
 import {
   validateRazorpayCredentials,
@@ -444,10 +448,20 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
       if (!prior && amount > d.amount - accepted)
         throw new Error("Refund exceeds remaining gateway balance")
     }
-    // Reserved observed operations acknowledge existing processed funds only.
-    // No client-supplied data can turn this path into a gateway POST.
+    // The canonical importer receives a read capability only. A missing or
+    // changed refund cannot fall through to the ordinary monetary POST path.
     const refund = external
-      ? await this.api.get<Entity>("refunds/" + external[1])
+      ? await acknowledgeProcessedRefund(
+          refundAcknowledgementReader(this.api),
+          {
+            refund_id: external[1],
+            payment_id: p.id,
+            amount,
+            currency: d.currency,
+            session_id: d.session_id,
+            operation_hash: importing?.origin_hash,
+          }
+        )
       : prior ||
         (await this.api.post<Entity>(
           "payments/" + p.id + "/refund",
@@ -461,17 +475,6 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
           },
           { "X-Refund-Idempotency": idempotency }
         ))
-    if (
-      external &&
-      (refund.id !== external[1] ||
-        refund.status !== "processed" ||
-        refund.notes?.medusa_refund_key !== importing?.origin_hash ||
-        (importing?.origin_hash !== undefined &&
-          refund.notes?.medusa_payment_session_id !== d.session_id))
-    )
-      throw new Error(
-        "Observed refund must be processed and external to native refund execution"
-      )
     if (
       !/^rfnd_[A-Za-z0-9]+$/.test(refund.id) ||
       refund.payment_id !== p.id ||

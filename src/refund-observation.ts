@@ -1,3 +1,4 @@
+import type { FinancialCoordinator } from "./financial-coordination"
 import type {
   IPaymentModuleService,
   MedusaContainer,
@@ -9,7 +10,7 @@ import type { RazorpayReconciliationReport } from "./reconciliation"
 export type RefundObservationDependencies = {
   get: (path: string) => Promise<Record<string, unknown>>
   reconcile: (nativePaymentId: string) => Promise<RazorpayReconciliationReport>
-  coordinate: <T>(sessionIds: string[], work: () => Promise<T>) => Promise<T>
+  coordinate: FinancialCoordinator
 }
 // JSON queues serialize Buffer bytes. Reconstruct bytes, never parsed-body JSON.
 export function signedRefundEvent(

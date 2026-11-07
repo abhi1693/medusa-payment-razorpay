@@ -68,6 +68,8 @@ jobs:
         suite:
           [
             amounts,
+            financial-coordination,
+            refund-acknowledgement,
             configuration,
             provider,
             http-client,

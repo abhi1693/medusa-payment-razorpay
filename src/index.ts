@@ -51,3 +51,10 @@ export { RazorpayRefundRejectedError } from "./razorpay-refund-rejected-error"
 
 export { validateRazorpayCredentials } from "./configuration"
 export type { RazorpayMode, RazorpayCredentials } from "./configuration"
+
+export { createRazorpayCoordinator } from "./financial-coordination"
+export type {
+  FinancialCoordinator,
+  FinancialCoordinationDependencies,
+  SessionOrderAssociation,
+} from "./financial-coordination"

@@ -1,3 +1,4 @@
+import type { FinancialCoordinator } from "./financial-coordination"
 import { inrMinorUnits, inrMajorUnits as major } from "./amounts"
 import { createLogger } from "./logger"
 import { createHash } from "node:crypto"
@@ -26,7 +27,7 @@ import { PendingRefundRecoveryError } from "./refund-recovery-error"
 import { observedRefundExecution } from "./refund-import-context"
 
 export type RefundImportOptions = ReconciliationOptions & {
-  coordinate: <T>(sessions: string[], work: () => Promise<T>) => Promise<T>
+  coordinate: FinancialCoordinator
 }
 const reference = "razorpay_refund"
 // Public FindConfig ORM options force current relations after another worker commits.
