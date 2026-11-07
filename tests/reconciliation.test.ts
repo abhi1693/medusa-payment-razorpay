@@ -394,3 +394,11 @@ it("rejects stored data bound to a different native payment session", async () =
   )
   expect(fetcher).not.toHaveBeenCalled()
 })
+
+it("rejects whitespace-only account secrets before an authenticated read", async () => {
+  vi.stubEnv("RAZORPAY_KEY_SECRET", "   ")
+  await expect(reconcileRazorpayPayment(scope, "pay_native")).rejects.toThrow(
+    "Test gateway"
+  )
+  expect(fetcher).not.toHaveBeenCalled()
+})

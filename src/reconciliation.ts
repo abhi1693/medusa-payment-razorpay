@@ -38,7 +38,8 @@ export function gatewayReader(options: ReconciliationOptions) {
   if (
     options.mode !== "test" ||
     !/^rzp_test_[A-Za-z0-9]+$/.test(key || "") ||
-    !secret
+    typeof secret !== "string" ||
+    !secret.trim()
   )
     throw new MedusaError(
       MedusaError.Types.NOT_ALLOWED,

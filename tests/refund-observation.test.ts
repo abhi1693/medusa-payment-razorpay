@@ -187,3 +187,8 @@ it.each([
   )
   expect(mocks.get).not.toHaveBeenCalled()
 })
+
+it("rejects an unconfigured whitespace-only refund webhook secret", () => {
+  vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", "   ")
+  expect(() => signedRefundEvent(signed(body()))).toThrow("signature")
+})

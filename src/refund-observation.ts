@@ -3,7 +3,7 @@ import type {
   MedusaContainer,
 } from "@medusajs/framework/types"
 import { Modules } from "@medusajs/framework/utils"
-import { createHmac, timingSafeEqual } from "node:crypto"
+import { verify } from "./security"
 import { record } from "./records"
 import type { RazorpayReconciliationReport } from "./reconciliation"
 export type RefundObservationDependencies = {
@@ -30,18 +30,15 @@ export function signedRefundEvent(
       throw new Error("Missing raw webhook bytes")
     raw = Buffer.from(value.data)
   }
-  const signature = payload.headers?.["x-razorpay-signature"]
-  if (
-    !secret ||
-    typeof signature !== "string" ||
-    !/^[a-f0-9]{64}$/i.test(signature)
-  )
+  try {
+    verify(
+      raw as Buffer,
+      payload.headers?.["x-razorpay-signature"],
+      secret as string
+    )
+  } catch {
     throw new Error("Invalid refund webhook signature")
-  const expected = createHmac("sha256", secret)
-    .update(raw as Buffer)
-    .digest()
-  if (!timingSafeEqual(expected, Buffer.from(signature, "hex")))
-    throw new Error("Invalid refund webhook signature")
+  }
   const event = JSON.parse((raw as Buffer).toString())
   if (
     ![
