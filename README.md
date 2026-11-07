@@ -102,7 +102,7 @@ Initiate refunds through Medusa's native refund workflow and preserve the operat
 
 The exported reconciliation helpers compare authenticated gateway payment/order/refund information with native records. The read-only report helpers never change records. The optional importer uses native financial APIs only for individually verified processed Dashboard and deferred native refunds and rejects ambiguous associations. Review discrepancies before retrying an uncertain request. Applications can supply a `refund_guard` and a common distributed lock covering the session and its associated order to coordinate refund execution, observation and order completion.
 
-Read [operations and validation](docs/operations.md) for pending/failed refund handling, uncertain outcomes, monitoring and test limits.
+Read [operations and validation](docs/operations.md) for pending/failed refund handling, uncertain outcomes, monitoring and test limits. The exported `assessRazorpayRefundRecovery` and `recoverRazorpayRefund` helpers provide a controlled operator path for supported processed-refund imports, with reviewed snapshots, application-enforced maintenance controls and post-recovery accounting checks. Original pending reservations remain quarantined. Known incomplete canonical accounting requires the operator path; automatic takeover scheduling is disabled.
 
 ## Development
 

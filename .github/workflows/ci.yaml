@@ -68,6 +68,7 @@ jobs:
         suite:
           [
             amounts,
+            operator-command,
             financial-coordination,
             refund-acknowledgement,
             configuration,

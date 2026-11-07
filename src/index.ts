@@ -58,3 +58,21 @@ export type {
   FinancialCoordinationDependencies,
   SessionOrderAssociation,
 } from "./financial-coordination"
+
+export {
+  assessRazorpayRefundRecovery,
+  recoverRazorpayRefund,
+} from "./operator-recovery"
+export type {
+  RefundRecoveryTarget,
+  RefundRecoveryAssessment,
+  RefundRecoveryControl,
+} from "./operator-recovery"
+
+export { OperatorRefundRecoveryRequiredError } from "./operator-recovery-required-error"
+
+export { createRazorpayRecoveryOptions } from "./operator-configuration"
+export type {
+  RefundRecoveryConfiguration,
+  RefundRecoveryConfigurationFactory,
+} from "./operator-configuration"

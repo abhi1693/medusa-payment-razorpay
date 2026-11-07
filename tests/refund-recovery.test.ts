@@ -9,17 +9,18 @@ import {
   RAZORPAY_REFUND_RECOVERY_EVENT,
 } from "../src/refund-recovery"
 import { PendingRefundRecoveryError } from "../src/refund-recovery-error"
+import { OperatorRefundRecoveryRequiredError } from "../src/operator-recovery-required-error"
 const scope = { resolve: () => ({ emit: mocks.emit }) } as any
-const event = { payment_id: "pay_fixture", refund_id: "rfnd_fixture" },
-  options = {
-    mode: "test" as const,
-    key_id: "rzp_test_fixture",
-    key_secret: "fixture",
-    coordinate: async (_: string[], work: any) => work(),
-  }
+const event = { payment_id: "pay_fixture", refund_id: "rfnd_fixture" }
+const options = {
+  mode: "test" as const,
+  key_id: "rzp_test_fixture",
+  key_secret: "fixture",
+  coordinate: async <T>(_ids: string[], work: () => Promise<T>) => work(),
+}
 beforeEach(() => {
   mocks.importer.mockReset()
-  mocks.emit.mockReset().mockResolvedValue(undefined)
+  mocks.emit.mockReset()
 })
 it("returns a completed import without scheduling", async () => {
   mocks.importer.mockResolvedValue({ status: "imported" })
@@ -28,50 +29,32 @@ it("returns a completed import without scheduling", async () => {
   })
   expect(mocks.emit).not.toHaveBeenCalled()
 })
-it("durably schedules a bounded same-operation recovery beyond native grace", async () => {
-  mocks.importer.mockRejectedValue(new PendingRefundRecoveryError())
-  expect((await reconcileRazorpayRefund(scope, event, options)).status).toBe(
-    "deferred"
-  )
-  expect(REFUND_RECOVERY_DELAY_MS).toBeGreaterThan(15 * 60 * 1000)
-  expect(mocks.emit).toHaveBeenCalledWith({
-    name: RAZORPAY_REFUND_RECOVERY_EVENT,
-    data: { ...event, provider_id: "pp_razorpay_razorpay", attempt: 1 },
-    options: expect.objectContaining({
-      delay: REFUND_RECOVERY_DELAY_MS,
-      jobId: "razorpay-refund-recovery-rfnd_fixture-1",
-    }),
-  })
-  await reconcileRazorpayRefund(scope, event, options)
-  expect(mocks.emit.mock.calls[0][0].options.jobId).toBe(
-    mocks.emit.mock.calls[1][0].options.jobId
-  )
-})
-it("preserves a custom provider and increments retry attempts", async () => {
-  mocks.importer.mockRejectedValue(new PendingRefundRecoveryError())
-  await reconcileRazorpayRefund(scope, event, {
-    ...options,
-    provider_id: "pp_razorpay_custom",
-    recovery_attempt: 2,
-  })
-  expect(mocks.emit.mock.calls[0][0].data).toMatchObject({
-    provider_id: "pp_razorpay_custom",
-    attempt: 3,
-  })
-})
-it("does not acknowledge when durable enqueue fails", async () => {
-  mocks.importer.mockRejectedValue(new PendingRefundRecoveryError())
-  mocks.emit.mockRejectedValue(Error("Redis unavailable"))
-  await expect(reconcileRazorpayRefund(scope, event, options)).rejects.toThrow(
-    "Redis unavailable"
-  )
-})
-it("retains an exhausted reservation for review rather than starting another monetary operation", async () => {
-  mocks.importer.mockRejectedValue(new PendingRefundRecoveryError())
-  await expect(
-    reconcileRazorpayRefund(scope, event, { ...options, recovery_attempt: 3 })
-  ).rejects.toThrow("exhausted")
+it.each([
+  new PendingRefundRecoveryError(),
+  new OperatorRefundRecoveryRequiredError(),
+])(
+  "routes incomplete accounting to operator review without scheduling %s",
+  async (error) => {
+    mocks.importer.mockRejectedValue(error)
+    expect((await reconcileRazorpayRefund(scope, event, options)).status).toBe(
+      "operator_review_required"
+    )
+    expect(mocks.emit).not.toHaveBeenCalled()
+  }
+)
+it("consumes old delayed events without starting another takeover chain", async () => {
+  mocks.importer.mockRejectedValue(new OperatorRefundRecoveryRequiredError())
+  expect(
+    (
+      await reconcileRazorpayRefund(scope, event, {
+        ...options,
+        recovery_attempt: 3,
+      })
+    ).status
+  ).toBe("operator_review_required")
   expect(mocks.emit).not.toHaveBeenCalled()
+  expect(REFUND_RECOVERY_DELAY_MS).toBe(16 * 60 * 1000)
+  expect(RAZORPAY_REFUND_RECOVERY_EVENT).toBe("razorpay.refund.reconcile")
 })
 it.each([-1, 4, 1.5, NaN])(
   "rejects invalid attempt %s",
@@ -82,8 +65,8 @@ it.each([-1, 4, 1.5, NaN])(
     expect(mocks.importer).not.toHaveBeenCalled()
   }
 )
-it("propagates unrelated financial inconsistencies without automatic retry", async () => {
-  mocks.importer.mockRejectedValue(Error("binding mismatch"))
+it("propagates unrelated financial inconsistencies", async () => {
+  mocks.importer.mockRejectedValue(new Error("binding mismatch"))
   await expect(reconcileRazorpayRefund(scope, event, options)).rejects.toThrow(
     "binding mismatch"
   )

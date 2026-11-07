@@ -1,3 +1,5 @@
+import { operatorRecoveryExecution } from "./operator-recovery-context"
+import { OperatorRefundRecoveryRequiredError } from "./operator-recovery-required-error"
 import type { FinancialCoordinator } from "./financial-coordination"
 import { inrMinorUnits, inrMajorUnits as major } from "./amounts"
 import { createLogger } from "./logger"
@@ -22,7 +24,7 @@ import {
   reconcileRazorpayPayment,
   type ReconciliationOptions,
 } from "./reconciliation"
-import { record } from "./records"
+import { record, records } from "./records"
 import { PendingRefundRecoveryError } from "./refund-recovery-error"
 import { observedRefundExecution } from "./refund-import-context"
 
@@ -190,7 +192,7 @@ async function importRefund(
         }
       }
       if (record(match).status === "pending")
-        throw new PendingRefundRecoveryError()
+        throw new OperatorRefundRecoveryRequiredError()
       if (record(match).status !== "failed" || !record(match).deleted_at)
         throw new Error("Native refund attempt is not safely recoverable")
       // The failed native attempt remains an audit record. A processed gateway
@@ -217,6 +219,13 @@ async function importRefund(
       )
     const key = "razorpay-observed:" + event.refund_id
     let existing = attempts.find((r) => record(r).idempotency_key === key)
+    const resumingExisting = !!existing
+    const control = operatorRecoveryExecution.getStore()
+    const controlled =
+      control?.session_id === session &&
+      control.gateway_refund_id === event.refund_id
+    if (existing && record(existing).status !== "succeeded" && !controlled)
+      throw new OperatorRefundRecoveryRequiredError()
     // All existing refunds must have individual verified associations, not just
     // matching totals. No amount-based adoption or historical fallback.
     for (const r of refunds) {
@@ -387,7 +396,25 @@ async function importRefund(
       intent.amount_paise !== refund.amount
     )
       throw new Error("Native refund import intent mismatch")
-    // Each stage is recoverable through an immutable unique native reference.
+    if (resumingExisting && !controlled) {
+      const priorTransactions = await orders.listOrderTransactions({
+        order_id: orderId,
+        reference: "refund",
+        reference_id: existing.id,
+      })
+      const priorCredits = records(order.credit_lines).filter(
+        (line) =>
+          line.reference === reference && line.reference_id === existing.id
+      )
+      if (
+        priorTransactions.length !== 1 ||
+        paise(priorTransactions[0].amount) !== -Number(refund.amount) ||
+        priorCredits.length !== (Number(credit) > 0 ? 1 : 0) ||
+        (priorCredits[0] && paise(priorCredits[0].amount) !== credit)
+      )
+        throw new OperatorRefundRecoveryRequiredError()
+    }
+    // Controlled recovery rechecks each committed stage through its native reference.
     // A crash after either public API commits is recovered by querying it again.
     const transactions = await orders.listOrderTransactions({
       order_id: orderId,

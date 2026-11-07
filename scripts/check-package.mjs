@@ -33,6 +33,8 @@ try {
     "dist/index.d.ts",
     "dist/configuration.js",
     "dist/configuration.d.ts",
+    "dist/scripts/refund-recovery.js",
+    "dist/scripts/refund-recovery.d.ts",
     "README.md",
     "LICENSE",
     "docs/server-integration.md",
@@ -77,6 +79,9 @@ try {
     "signedRefundEvent",
     "reconcileRazorpayRefund",
     "RazorpayRefundRejectedError",
+    "assessRazorpayRefundRecovery",
+    "recoverRazorpayRefund",
+    "createRazorpayRecoveryOptions",
   ])
     assert.equal(typeof api[name], "function", `Missing export: ${name}`)
   assert.ok(

@@ -1,9 +1,22 @@
-import { beforeEach, afterEach, expect, it, vi } from "vitest"
+import { operatorRecoveryExecution } from "../src/operator-recovery-context"
+import { OperatorRefundRecoveryRequiredError } from "../src/operator-recovery-required-error"
+import {
+  assessRazorpayRefundRecovery,
+  recoverRazorpayRefund,
+  type RefundRecoveryControl,
+} from "../src/operator-recovery"
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest"
 import { MedusaError } from "@medusajs/framework/utils"
 import { PendingRefundRecoveryError } from "../src/refund-recovery-error"
 import { createHash } from "node:crypto"
-import { importRazorpayRefund } from "../src/refund-import"
+import { importRazorpayRefund as automaticImport } from "../src/refund-import"
 import RazorpayProvider from "../src/service"
+// Legacy stage-recovery cases exercise importer internals under a controlled test scope.
+const importRazorpayRefund: typeof automaticImport = (scope, event, options) =>
+  operatorRecoveryExecution.run(
+    { session_id: "payses_native", gateway_refund_id: event.refund_id },
+    () => automaticImport(scope, event, options)
+  )
 let emitted: any[],
   native: any,
   order: any,
@@ -535,7 +548,7 @@ it("defers an in-flight native operation rather than adopting it as an external 
   }
   await expect(
     importRazorpayRefund(scope, event, options)
-  ).rejects.toBeInstanceOf(PendingRefundRecoveryError)
+  ).rejects.toBeInstanceOf(OperatorRefundRecoveryRequiredError)
   expect(posts).toBe(0)
 })
 
@@ -650,4 +663,246 @@ it("rejects pending gateway state for a successful native refund", async () => {
     "Accepted native refund is not processed"
   )
   expect(posts).toBe(0)
+})
+
+describe("controlled operator recovery", () => {
+  const target = {
+    native_payment_id: "pay_native",
+    gateway_refund_id: "rfnd_external",
+  }
+  beforeEach(() => {
+    order.payment_collections = [{ payments: [{ id: native.id }] }]
+    order.summary.refunded_total = 0
+    const project = () => {
+      order.credit_lines.forEach((credit: any, index: number) => {
+        credit.id ||= "credit_" + index
+      })
+      order.summary.refunded_total = order.transactions
+        .filter((t: any) => t.reference === "refund")
+        .reduce((sum: number, t: any) => sum - Number(t.amount), 0)
+      order.summary.pending_difference =
+        order.summary.refunded_total -
+        order.credit_lines.reduce(
+          (sum: number, t: any) => sum + Number(t.amount),
+          0
+        )
+    }
+    const transaction = orders.addOrderTransactions
+    orders.addOrderTransactions = vi.fn(async (...args: any[]) => {
+      try {
+        return await transaction(...args)
+      } finally {
+        project()
+      }
+    })
+    const confirm = orders.confirmOrderChange
+    orders.confirmOrderChange = async (...args: any[]) => {
+      try {
+        return await confirm(...args)
+      } finally {
+        project()
+      }
+    }
+  })
+  function control(
+    assertQuiescent = vi.fn(async () => {})
+  ): RefundRecoveryControl {
+    return { withQuiescence: async (work) => work(assertQuiescent) }
+  }
+  it("assesses without writes and imports/rechecks exactly one financial record per stage", async () => {
+    const plan = await assessRazorpayRefundRecovery(scope, target, options)
+    expect(plan.status).toBe("ready")
+    expect(payments.refundPayment).not.toHaveBeenCalled()
+    expect(plan.fingerprint).toMatch(/^[a-f0-9]{64}$/)
+    const result = await recoverRazorpayRefund(scope, target, options, {
+      fingerprint: plan.fingerprint!,
+      control: control(),
+    })
+    expect(result.status).toBe("complete")
+    expect(result.changes_possible).toBe(true)
+    expect(native.refunds).toHaveLength(1)
+    expect(order.transactions).toHaveLength(1)
+    expect(order.credit_lines).toHaveLength(1)
+    const replay = await recoverRazorpayRefund(scope, target, options, {
+      fingerprint: result.fingerprint!,
+      control: control(),
+    })
+    expect(replay.status).toBe("complete")
+    expect(replay.changes_possible).toBe(false)
+    expect(posts).toBe(0)
+  })
+  it("binds approval to the configured mode and account key identity", async () => {
+    const plan = await assessRazorpayRefundRecovery(scope, target, options)
+    const changed = {
+      ...options,
+      mode: "live" as const,
+      key_id: "rzp_live_otherfixture",
+    }
+    const result = await recoverRazorpayRefund(scope, target, changed, {
+      fingerprint: plan.fingerprint!,
+      control: control(),
+    })
+    expect(result.reason).toBe("stale_or_unapproved_assessment")
+    expect(result.changes_possible).toBe(false)
+    expect(payments.refundPayment).not.toHaveBeenCalled()
+    expect(posts).toBe(0)
+  })
+  it("rejects a stale approved assessment before financial writes", async () => {
+    const plan = await assessRazorpayRefundRecovery(scope, target, options)
+    order.status = "completed"
+    const result = await recoverRazorpayRefund(scope, target, options, {
+      fingerprint: plan.fingerprint!,
+      control: control(),
+    })
+    expect(result.reason).toBe("stale_or_unapproved_assessment")
+    expect(payments.refundPayment).not.toHaveBeenCalled()
+  })
+  it("requires maintenance verification and rechecks it before execution", async () => {
+    const plan = await assessRazorpayRefundRecovery(scope, target, options)
+    const verify = vi.fn(async () => {})
+    verify.mockRejectedValueOnce(new Error("workers still running"))
+    const result = await recoverRazorpayRefund(scope, target, options, {
+      fingerprint: plan.fingerprint!,
+      control: control(verify),
+    })
+    expect(result.status).toBe("quarantined")
+    expect(result.changes_possible).toBe(false)
+    expect(payments.refundPayment).not.toHaveBeenCalled()
+    verify.mockRejectedValueOnce(new Error("maintenance lost"))
+    expect(
+      (
+        await recoverRazorpayRefund(scope, target, options, {
+          fingerprint: plan.fingerprint!,
+          control: control(verify),
+        })
+      ).status
+    ).toBe("quarantined")
+    expect(posts).toBe(0)
+  })
+  it.each(["pending", "succeeded"])(
+    "quarantines an original native %s reservation",
+    async (status) => {
+      native.failed_attempts = [
+        {
+          id: "refund_original",
+          idempotency_key: "original",
+          amount: 10,
+          status,
+        },
+      ]
+      refunds[0].notes = {
+        medusa_refund_key: createHash("sha256")
+          .update("order_gateway:original")
+          .digest("hex"),
+        medusa_payment_session_id: "payses_native",
+      }
+      const plan = await assessRazorpayRefundRecovery(scope, target, options)
+      expect(plan.status).toBe("quarantined")
+      expect(payments.refundPayment).not.toHaveBeenCalled()
+      expect(posts).toBe(0)
+    }
+  )
+  it.each(["pending", "failed"])(
+    "quarantines gateway %s without creating accounting",
+    async (status) => {
+      refunds[0].status = status
+      if (status === "failed") gateway.amount_refunded = 0
+      expect(
+        (await assessRazorpayRefundRecovery(scope, target, options)).status
+      ).toBe("quarantined")
+      expect(payments.refundPayment).not.toHaveBeenCalled()
+    }
+  )
+  it("quarantines multi-payment orders and unrelated financial history", async () => {
+    order.payment_collections[0].payments.push({ id: "pay_other" })
+    expect(
+      (await assessRazorpayRefundRecovery(scope, target, options)).reason
+    ).toBe("single_payment_order_required")
+    order.payment_collections[0].payments.pop()
+    order.transactions.push({
+      reference: "refund",
+      reference_id: "refund_unknown",
+      amount: -1,
+    })
+    expect(
+      (await assessRazorpayRefundRecovery(scope, target, options)).reason
+    ).toBe("unexpected_order_refund_transactions")
+    expect(posts).toBe(0)
+  })
+  it("quarantines unrelated pending changes without import metadata", async () => {
+    order.changes = [{ id: "change_other", status: "pending" }]
+    expect(
+      (await assessRazorpayRefundRecovery(scope, target, options)).reason
+    ).toBe("unrelated_or_excessive_order_changes")
+    expect(payments.refundPayment).not.toHaveBeenCalled()
+  })
+  it("does not adopt anonymous refund transactions or credits on first import", async () => {
+    order.transactions.push({ reference: "refund", amount: -10 })
+    expect(
+      (await assessRazorpayRefundRecovery(scope, target, options)).reason
+    ).toBe("unexpected_order_refund_transactions")
+    order.transactions = []
+    order.credit_lines.push({
+      id: "credit_other",
+      reference: "razorpay_refund",
+      amount: 10,
+    })
+    expect(
+      (await assessRazorpayRefundRecovery(scope, target, options)).reason
+    ).toBe("unexpected_import_credit")
+  })
+  it("reassesses partial-stage crashes instead of reporting success", async () => {
+    const plan = await assessRazorpayRefundRecovery(scope, target, options)
+    fail = "transaction"
+    const first = await recoverRazorpayRefund(scope, target, options, {
+      fingerprint: plan.fingerprint!,
+      control: control(),
+    })
+    expect(first.status).toBe("quarantined")
+    expect(first.changes_possible).toBe(true)
+    const resume = await assessRazorpayRefundRecovery(scope, target, options)
+    expect(resume.status).toBe("ready")
+    expect(
+      (
+        await recoverRazorpayRefund(scope, target, options, {
+          fingerprint: resume.fingerprint!,
+          control: control(),
+        })
+      ).status
+    ).toBe("complete")
+    expect(order.transactions).toHaveLength(1)
+    expect(order.credit_lines).toHaveLength(1)
+    expect(posts).toBe(0)
+  })
+})
+
+it.each(["refund", "transaction", "action"])(
+  "automatic import quarantines incomplete canonical stage %s",
+  async (stage) => {
+    fail = stage
+    await expect(automaticImport(scope, event, options)).rejects.toThrow(
+      "Crash"
+    )
+    const count = payments.refundPayment.mock.calls.length
+    await expect(automaticImport(scope, event, options)).rejects.toBeInstanceOf(
+      OperatorRefundRecoveryRequiredError
+    )
+    expect(payments.refundPayment.mock.calls.length).toBe(count)
+    expect(posts).toBe(0)
+  }
+)
+it("automatic first import and completed replay remain idempotent", async () => {
+  await automaticImport(scope, event, options)
+  await automaticImport(scope, event, options)
+  expect(native.refunds).toHaveLength(1)
+  expect(order.transactions).toHaveLength(1)
+  expect(order.credit_lines).toHaveLength(1)
+})
+
+it("automatic replay after committed credit adds no further financial records", async () => {
+  fail = "credit"
+  await expect(automaticImport(scope, event, options)).rejects.toThrow("Crash")
+  await automaticImport(scope, event, options)
+  expect(order.transactions).toHaveLength(1)
+  expect(order.credit_lines).toHaveLength(1)
 })
