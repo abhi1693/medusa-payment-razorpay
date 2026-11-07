@@ -3,7 +3,8 @@ import { createHash, createHmac } from "node:crypto"
 import { BigNumber } from "@medusajs/framework/utils"
 import Provider, { type Options } from "../src/service"
 import { minor, verify, verifyRazorpayCheckout } from "../src/security"
-import { RazorpayGateway } from "../src/gateway"
+import { RazorpayGateway, GatewayRequestError } from "../src/gateway"
+import { RazorpayRefundRejectedError } from "../src/razorpay-refund-rejected-error"
 const options: Options = {
   mode: "test",
   key_id: "rzp_test_fixture",
@@ -804,5 +805,58 @@ describe("settlement-aware refund execution", () => {
       "limit exceeded"
     )
     expect(request.mock.calls.some((c) => c[0].endsWith("/refund"))).toBe(false)
+  })
+})
+
+describe("native Admin refund rejection", () => {
+  const input = {
+    data,
+    amount: 1,
+    context: { idempotency_key: "rejected_refund" },
+  }
+  it("returns an actionable native Medusa error for a rejected refund POST", async () => {
+    const failure = new GatewayRequestError(
+      "raw provider details",
+      "POST",
+      "http",
+      400
+    )
+    const base = request.getMockImplementation()!
+    request.mockImplementation(async (path, ...args) => {
+      if (path.endsWith("/refund")) throw failure
+      return base(path, ...args)
+    })
+    const error = await provider
+      .refundPayment(input)
+      .catch((error: unknown) => error)
+    expect(error).toBeInstanceOf(RazorpayRefundRejectedError)
+    expect(error).toMatchObject({
+      cause: failure,
+      code: "razorpay_refund_rejected",
+    })
+    expect(error).toMatchObject({ type: "invalid_data" })
+    expect((error as Error).message).toContain(
+      "Razorpay rejected this refund request"
+    )
+    expect((error as Error).message).toContain("Confirm the refund status")
+    expect((error as Error).message).not.toContain("raw provider details")
+    expect(
+      request.mock.calls.filter(([path]) => path.endsWith("/refund"))
+    ).toHaveLength(1)
+  })
+  it.each([
+    ["GET", "http", 400],
+    ["POST", "http", 500],
+    ["POST", "transport", undefined],
+    ["POST", "response", 200],
+  ] as const)("does not misclassify %s %s %s", async (method, kind, status) => {
+    const failure = new GatewayRequestError(
+      "uncertain request",
+      method,
+      kind,
+      status
+    )
+    request.mockRejectedValue(failure)
+    await expect(provider.refundPayment(input)).rejects.toBe(failure)
   })
 })

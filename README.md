@@ -153,3 +153,13 @@ Prettier checks the repository, including documentation and configuration; `.edi
 Typecheck validates both the published source and unit tests. The test project matches Vitest's ESM resolution; malformed runtime fixture values remain explicit test boundaries. The scripts under `tests/native` are consuming-Medusa integration fixtures and resolve/run inside that application's isolated test environment, not the standalone unit-test project.
 
 The GitHub workflow runs formatting, lint, typecheck and build as separately visible checks. Each unit suite runs independently in its own matrix job and uploads JUnit XML. Reproduce a selected suite locally with `docker compose run --rm tools npm test -- tests/http-client.test.ts`. These self-contained suites use mocked gateway/service fixtures and do not perform gateway transactions. Hosted results and consuming-application integration evidence remain separate from local unit checks.
+
+### Rejected refund requests
+
+A refund POST rejected with HTTP 400 raises `RazorpayRefundRejectedError`
+(`invalid_data`, code `razorpay_refund_rejected`). Medusa Admin can show its
+actionable message instead of a generic server error. The message asks operators
+to check the account balance, remaining refundable amount and gateway refund
+status before retrying. HTTP 400 alone does not establish insufficient balance.
+Transport failures and other uncertain responses retain reconciliation handling;
+the provider never retries a refund automatically.

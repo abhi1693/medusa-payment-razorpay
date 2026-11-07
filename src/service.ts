@@ -24,7 +24,13 @@ import type {
   ProviderWebhookPayload,
   WebhookActionResult,
 } from "@medusajs/framework/types"
-import { RazorpayGateway, type Entity, type Gateway } from "./gateway"
+import {
+  GatewayRequestError,
+  RazorpayGateway,
+  type Entity,
+  type Gateway,
+} from "./gateway"
+import { RazorpayRefundRejectedError } from "./razorpay-refund-rejected-error"
 import { minor, verify } from "./security"
 import { GatewayRefundReconciliationError } from "./gateway-refund-reconciliation-error"
 import { GatewayRefundPendingError } from "./gateway-refund-pending-error"
@@ -322,7 +328,20 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     input: RefundPaymentInput
   ): Promise<RefundPaymentOutput> {
     const d = this.data(input)
-    const execute = () => this.refundAtGateway(input)
+    const execute = async () => {
+      try {
+        return await this.refundAtGateway(input)
+      } catch (error) {
+        if (
+          error instanceof GatewayRequestError &&
+          error.method === "POST" &&
+          error.kind === "http" &&
+          error.status === 400
+        )
+          throw new RazorpayRefundRejectedError(error)
+        throw error
+      }
+    }
     const observed = observedRefundExecution.getStore()
     if (
       observed?.session === d.session_id &&
