@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import type { MedusaContainer } from "@medusajs/framework/types"
 import { reconcileRazorpayPayment as reconcile } from "../src/reconciliation"
 const config = () => ({
-  mode: process.env.RAZORPAY_MODE as "test",
+  mode: process.env.RAZORPAY_MODE as "test" | "live",
   key_id: process.env.RAZORPAY_KEY_ID!,
   key_secret: process.env.RAZORPAY_KEY_SECRET!,
 })
@@ -176,13 +176,16 @@ it("sanitizes unavailable payment lookup HTTP 400 without leaking response bodie
     "HTTP 400"
   )
 })
-it.each(["live", "unknown"])("never accesses %s mode", async (mode) => {
-  vi.stubEnv("RAZORPAY_MODE", mode)
-  await expect(reconcileRazorpayPayment(scope, "pay_native")).rejects.toThrow(
-    "Test gateway configuration"
-  )
-  expect(fetcher).not.toHaveBeenCalled()
-})
+it.each(["live", "unknown"])(
+  "rejects invalid or mismatched %s configuration",
+  async (mode) => {
+    vi.stubEnv("RAZORPAY_MODE", mode)
+    await expect(reconcileRazorpayPayment(scope, "pay_native")).rejects.toThrow(
+      "Razorpay"
+    )
+    expect(fetcher).not.toHaveBeenCalled()
+  }
+)
 
 it("rejects malformed native identifiers without exposing records", async () => {
   await expect(reconcileRazorpayPayment(scope, "../pay")).rejects.toThrow(
@@ -190,23 +193,23 @@ it("rejects malformed native identifiers without exposing records", async () => 
   )
   expect(fetcher).not.toHaveBeenCalled()
 })
-it("requires a test key and private configuration before gateway reads", async () => {
+it("requires a matching key and private configuration before gateway reads", async () => {
   vi.stubEnv("RAZORPAY_KEY_ID", "")
   await expect(reconcileRazorpayPayment(scope, "pay_native")).rejects.toThrow(
-    "Test gateway"
+    "Razorpay"
   )
   expect(fetcher).not.toHaveBeenCalled()
 })
 it("requires the configured private secret", async () => {
   vi.stubEnv("RAZORPAY_KEY_SECRET", "")
   await expect(reconcileRazorpayPayment(scope, "pay_native")).rejects.toThrow(
-    "Test gateway"
+    "Razorpay"
   )
 })
 it("fails safely when the configured test key has live prefix", async () => {
   vi.stubEnv("RAZORPAY_KEY_ID", "rzp_live_fixture")
   await expect(reconcileRazorpayPayment(scope, "pay_native")).rejects.toThrow(
-    "Test gateway"
+    "Razorpay"
   )
 })
 it("does not start a gateway read after its report deadline", async () => {
@@ -398,7 +401,22 @@ it("rejects stored data bound to a different native payment session", async () =
 it("rejects whitespace-only account secrets before an authenticated read", async () => {
   vi.stubEnv("RAZORPAY_KEY_SECRET", "   ")
   await expect(reconcileRazorpayPayment(scope, "pay_native")).rejects.toThrow(
-    "Test gateway"
+    "Razorpay"
   )
   expect(fetcher).not.toHaveBeenCalled()
+})
+
+it("uses the explicit live account for read-only reconciliation", async () => {
+  vi.stubEnv("RAZORPAY_MODE", "live")
+  vi.stubEnv("RAZORPAY_KEY_ID", "rzp_live_fixture")
+  const result = await reconcileRazorpayPayment(scope, "pay_native")
+  expect(result.discrepancies).toEqual([])
+  expect(fetcher).toHaveBeenCalledTimes(3)
+  for (const [, init] of fetcher.mock.calls) {
+    expect(init.method).toBe("GET")
+    expect(new Headers(init.headers).get("authorization")).toBe(
+      "Basic " +
+        Buffer.from("rzp_live_fixture:fixture_secret").toString("base64")
+    )
+  }
 })

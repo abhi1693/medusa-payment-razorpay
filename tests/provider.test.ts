@@ -342,6 +342,7 @@ describe("gateway transport", () => {
       .mockResolvedValue(new Response("secret", { status: 500 }))
     await expect(
       new RazorpayGateway({
+        mode: "test",
         key_id: options.key_id,
         key_secret: options.key_secret,
       }).request("orders", {})

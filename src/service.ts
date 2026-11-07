@@ -1,3 +1,4 @@
+import { validateRazorpayCredentials, type RazorpayMode } from "./configuration"
 import {
   createLogger,
   validateLogLevel,
@@ -41,7 +42,7 @@ export type RefundExecutionGuard = (
 ) => Promise<RefundPaymentOutput>
 export type Options = {
   log_level?: LogLevel
-  mode: "test"
+  mode: RazorpayMode
   key_id: string
   key_secret: string
   webhook_secret?: string
@@ -72,6 +73,7 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
       level: options.log_level,
     })
     this.api = new RazorpayGateway({
+      mode: options.mode,
       key_id: options.key_id,
       key_secret: options.key_secret,
       logger: container.logger,
@@ -138,12 +140,7 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
   }
   static validateOptions(options: Record<string, unknown>) {
     validateLogLevel(options.log_level)
-    if (
-      options.mode !== "test" ||
-      typeof options.key_id !== "string" ||
-      !/^rzp_test_[A-Za-z0-9]+$/.test(options.key_id)
-    )
-      throw new Error("Razorpay requires test mode and a test key")
+    validateRazorpayCredentials(options)
     if (
       options.refund_guard !== undefined &&
       typeof options.refund_guard !== "function"
@@ -156,7 +153,9 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
         (typeof options.webhook_secret !== "string" ||
           !options.webhook_secret.trim()))
     )
-      throw new Error("Razorpay test secrets must be configured privately")
+      throw new Error("Razorpay webhook secret must be configured privately")
+    if (options.mode === "live" && !options.webhook_secret)
+      throw new Error("Razorpay live mode requires a webhook secret")
   }
   private data(input: { data?: Record<string, unknown> }): Data {
     const d = input.data as Data | undefined

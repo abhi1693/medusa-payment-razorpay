@@ -8,6 +8,7 @@ import { gatewayReader } from "../src/reconciliation"
 import RazorpayProvider from "../src/service"
 afterEach(() => vi.unstubAllGlobals())
 const options: GatewayOptions = {
+  mode: "test" as const,
   key_id: "rzp_test_fixture",
   key_secret: "fixture_secret",
 }

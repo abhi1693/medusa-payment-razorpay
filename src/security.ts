@@ -16,7 +16,7 @@ export function verify(
     throw new Error("Invalid Razorpay signature")
 }
 
-// INR only in this test-stage release. Reject unsupported precision instead of rounding.
+// INR only in both account modes. Reject unsupported precision instead of rounding.
 export function minor(amount: unknown, currency: string): number {
   if (currency.toUpperCase() !== "INR") throw new Error("Unsupported currency")
   const value =

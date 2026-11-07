@@ -48,3 +48,6 @@ export type { GatewayOptions, HttpMethod, GatewayFailureKind } from "./gateway"
 export type { GatewayReader } from "./reconciliation"
 
 export { RazorpayRefundRejectedError } from "./razorpay-refund-rejected-error"
+
+export { validateRazorpayCredentials } from "./configuration"
+export type { RazorpayMode, RazorpayCredentials } from "./configuration"

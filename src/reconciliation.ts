@@ -1,3 +1,4 @@
+import { validateRazorpayCredentials, type RazorpayMode } from "./configuration"
 import { RazorpayGateway, GatewayRequestError } from "./gateway"
 import { createLogger, type LogLevel, type LoggerSink } from "./logger"
 import type {
@@ -10,7 +11,7 @@ import { record, records } from "./records"
 export type ReconciliationOptions = {
   log_level?: LogLevel
   logger?: LoggerSink
-  mode: "test"
+  mode: RazorpayMode
   key_id: string
   key_secret: string
   provider_id?: string
@@ -38,21 +39,11 @@ function sum(values: number[]) {
 }
 export type GatewayReader = (path: string) => Promise<Record<string, unknown>>
 export function gatewayReader(options: ReconciliationOptions): GatewayReader {
-  const key = options.key_id,
-    secret = options.key_secret
-  if (
-    options.mode !== "test" ||
-    !/^rzp_test_[A-Za-z0-9]+$/.test(key || "") ||
-    typeof secret !== "string" ||
-    !secret.trim()
-  )
-    throw new MedusaError(
-      MedusaError.Types.NOT_ALLOWED,
-      "Test gateway configuration is required"
-    )
+  validateRazorpayCredentials(options)
   const client = new RazorpayGateway({
-    key_id: key,
-    key_secret: secret,
+    mode: options.mode,
+    key_id: options.key_id,
+    key_secret: options.key_secret,
     logger: options.logger,
     log_level: options.log_level,
   })

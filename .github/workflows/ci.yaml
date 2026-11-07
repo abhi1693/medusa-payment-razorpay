@@ -1,9 +1,9 @@
-name: Provider checks
+name: CI
 on:
   pull_request:
   push:
-    branches: [master, "feat/**"]
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 concurrency:
@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        check: ["format:check", lint, typecheck, build]
+        check: ["format:check", lint, typecheck, build, "package:check"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -33,6 +33,7 @@ jobs:
       matrix:
         suite:
           [
+            configuration,
             provider,
             http-client,
             logger,
