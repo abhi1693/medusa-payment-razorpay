@@ -7,6 +7,8 @@ export function verify(
   signature: unknown,
   secret: string
 ) {
+  if (typeof secret !== "string" || !secret.trim())
+    throw new Error("Razorpay signature secret is not configured")
   if (typeof signature !== "string" || !/^[a-f0-9]{64}$/i.test(signature))
     throw new Error("Invalid Razorpay signature")
   const expected = createHmac("sha256", secret).update(body).digest()
@@ -25,4 +27,19 @@ export function minor(amount: unknown, currency: string): number {
   if (result <= 0n || result > BigInt(Number.MAX_SAFE_INTEGER))
     throw new Error("Invalid INR amount")
   return Number(result)
+}
+
+export function verifyRazorpayCheckout(
+  orderId: string,
+  paymentId: string,
+  signature: unknown,
+  secret: string
+) {
+  if (
+    !/^order_[A-Za-z0-9]+$/.test(orderId) ||
+    !/^pay_[A-Za-z0-9]+$/.test(paymentId) ||
+    !secret
+  )
+    throw new Error("Invalid checkout confirmation identity or configuration")
+  verify(orderId + "|" + paymentId, signature, secret)
 }
