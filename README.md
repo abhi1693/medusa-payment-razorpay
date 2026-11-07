@@ -1,140 +1,122 @@
-# Medusa Razorpay payment provider
+# Medusa Razorpay
 
-Original INR-only automatic-capture provider for Medusa 2.22.2. Test mode only.
-Uses native PaymentSession/Payment data and native capture/refund records. No custom models, database or ledger.
+[![Medusa 2.22.2 / 2.22.4](https://img.shields.io/badge/Medusa-2.22.2%20%7C%202.22.4-7c3aed)](https://docs.medusajs.com/)
+[![Test mode](https://img.shields.io/badge/Razorpay-test%20mode-2563eb)](#supported-payment-lifecycle)
+[![MIT license](https://img.shields.io/github/license/abhi1693/medusa-payment-razorpay)](LICENSE)
+[![Sponsor](https://img.shields.io/badge/Sponsor-abhi1693-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/abhi1693)
 
-## Configuration
+A Razorpay payment provider for Medusa v2, with verified checkout results, automatic-capture payments, full and partial refunds, and reusable server-side reconciliation helpers. Uses native Medusa payment sessions, payments, captures and refunds without additional models or a financial ledger.
 
-Register the provider directly. Keep API credentials in the private backend environment, never frontend code or version control.
+**Currently supports INR in Razorpay test mode only. Live credentials and unsupported currencies are rejected.** Automatic capture must already be configured in your Razorpay test account.
+
+[Setup](#installation-and-configuration) · [Checkout](#storefront-checkout) · [Webhooks](#webhooks) · [Server integration](docs/server-integration.md) · [Operations](docs/operations.md)
+
+## Supported payment lifecycle
+
+| Capability            | Behavior                                                                                                                                                                                             |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Payment sessions      | Creates a Razorpay order from the server-provided Medusa amount, with precise rupee-to-paise conversion and a native session association.                                                            |
+| Checkout verification | Verifies the signature, fetched payment and order, amount, INR currency and session association before accepting payment.                                                                            |
+| Automatic capture     | Requires captured gateway funds before authorization completes. Native capture verifies gateway state and never sends another capture request.                                                       |
+| Failed attempts       | Allows another attempt on the same order after the previous bound attempt has failed. Successful or in-progress associations cannot silently be replaced.                                            |
+| Cancellation          | Cancels/deletes an unpaid session locally; rejects cancellation when gateway payment is authorized or captured. It does not cancel a Razorpay order or issue an implicit refund.                     |
+| Refunds               | Full and partial normal-speed refunds, minimum INR 1.00, with a stable native operation key sent through Razorpay's idempotent refund API.                                                           |
+| Payment webhooks      | Signed `payment.authorized` and `payment.captured` events re-fetch gateway state; native processing proceeds only after capture.                                                                     |
+| Refund observation    | Signed refund events trigger authenticated current-state checks through optional application wiring. Dashboard refunds and later failures are **not automatically imported into Medusa accounting**. |
+
+The declared framework peer versions are **2.22.2 and 2.22.4**. Native application validation targets Medusa 2.22.2; package development uses 2.22.4. This repository provides a payment module provider and server helpers. Checkout UI, customer authorization, terms acceptance, order-completion policy and infrastructure belong to the consuming application.
+
+## Installation and configuration
+
+The package is currently private in `package.json` and is not an npm release. Install from Git using a reviewed full commit SHA and commit your application's lockfile:
+
+```sh
+npm install 'git+https://github.com/abhi1693/medusa-payment-razorpay.git#<reviewed-full-commit-sha>'
+```
+
+Git installation runs the package's TypeScript build through its `prepare` script. Your build environment needs Git, Node.js and the declared peer dependency. The repository's Docker toolchain uses Node.js 24.
+
+Add the provider to your existing Payment Module configuration in `medusa-config.ts`:
 
 ```ts
 {
   resolve: "@medusajs/medusa/payment",
-  options: { providers: [{
-    resolve: "@abhi1693/medusa-payment-razorpay", id: "razorpay",
-    options: { mode: "test", key_id: process.env.RAZORPAY_KEY_ID,
-      key_secret: process.env.RAZORPAY_KEY_SECRET, webhook_secret: process.env.RAZORPAY_WEBHOOK_SECRET }
-  }] }
+  options: {
+    providers: [
+      // Keep your other payment providers here.
+      {
+        resolve: "@abhi1693/medusa-payment-razorpay",
+        id: "razorpay",
+        options: {
+          mode: process.env.RAZORPAY_MODE,
+          key_id: process.env.RAZORPAY_KEY_ID,
+          key_secret: process.env.RAZORPAY_KEY_SECRET,
+          webhook_secret: process.env.RAZORPAY_WEBHOOK_SECRET,
+        },
+      },
+    ],
+  },
 }
 ```
 
-The native provider ID is `pp_razorpay_razorpay`. Registration makes it available in native region settings; it does not assign it to a region. There is no enable/disable environment toggle. Test API credentials are required at startup. The webhook secret is optional for basic Admin setup; incoming webhooks fail closed until it is configured. Automatic capture must already be configured in the test account. This plugin never changes account settings or sends a capture POST. Authorization completes only after gateway status is captured. Unsupported currencies, invalid precision and live key IDs are rejected.
+Configure the backend's private environment:
 
-Checkout results must be submitted using Medusa's Store payment-session client-data endpoint (`data.client`). The provider checks the stored order ID, HMAC, fetched gateway payment/order, amount, currency and session note. Session data is public-safe; do not store secrets there.
+```dotenv
+RAZORPAY_MODE=test
+RAZORPAY_KEY_ID=rzp_test_REPLACE_ME
+RAZORPAY_KEY_SECRET=REPLACE_ME
+RAZORPAY_WEBHOOK_SECRET=REPLACE_ME
+```
 
-Configure test webhooks at `/hooks/payment/razorpay_razorpay`. Raw request bytes are mandatory. Captured events and duplicate/out-of-order authorization notifications re-fetch gateway state and use native payment processing. Invalid signatures throw; unsupported events are ignored. This is replay-safe processing, not an exactly-once event audit. Configure durable native event/workflow/locking providers and retention appropriate to operations.
+These are placeholders. Never commit actual credentials or expose the secret or webhook secret to a frontend. The key ID is public checkout configuration. The only supported mode is `test`; startup rejects missing/invalid test API credentials. The webhook secret may be omitted for initial Admin setup, but webhooks fail closed until a valid secret is configured.
 
-Native refund context supplies a stable idempotency key. The plugin hashes it with the order ID and sends Razorpay's `X-Refund-Idempotency` header. Retry only through the same keyed native operation. Reconcile unexpected gateway results before starting a new operation. Capture is read-only because automatic capture owns that gateway transition.
+Start the backend through your application's normal workflow. In **Admin → Settings → Regions → your region**, select the Razorpay payment provider. This registration produces provider ID **`pp_razorpay_razorpay`**. Registration alone does not associate it with a region. There is no enabled/disabled environment toggle and no custom Admin menu or plugin migration.
 
-A timeout during order creation can leave an unpaid gateway order without a native association. Do not implement a blind HTTP POST retry: inspect gateway orders/receipt and recover or expire the session through an operator workflow. This release does not claim crash-proof exactly-once order initiation.
+## Storefront checkout
 
-Applications must enforce their checkout acceptance/ownership rules in backend completion validation because native payment webhooks may complete carts without the browser returning. Do not use provider data as an authorization mechanism.
+1. Create/select a native Medusa payment session using `pp_razorpay_razorpay`.
+2. Initialize Razorpay Checkout using the session's public `key_id`, `order_id`, `amount` (paise) and `currency` (`INR`).
+3. Submit `razorpay_order_id`, `razorpay_payment_id` and `razorpay_signature` through Medusa's Store payment-session client-data endpoint (`data.client`). Keep the stored server session fields authoritative.
+4. Complete the cart through your backend's normal ownership, cart-total and acceptance checks. While automatic capture is pending, wait/reconcile rather than treating authorization as a completed payment.
+
+The provider includes no checkout widget and makes no blanket promise about individual Razorpay payment methods. Available methods depend on the merchant account and Checkout configuration. Enforce application rules on the server: native payment webhooks may complete carts without the browser returning.
+
+## Webhooks
+
+For the example registration above, use your **backend's public HTTPS origin** with:
+
+```text
+/hooks/payment/razorpay_razorpay
+```
+
+Subscribe to `payment.authorized` and `payment.captured` in the matching Razorpay test account. Preserve the exact raw request bytes and `x-razorpay-signature` header. The provider verifies HMAC signatures and fetches current gateway state, making repeated and out-of-order notifications safe to re-evaluate. `payment.failed` and other unsupported payment events are ignored; they do not invalidate a later checkout attempt.
+
+For refund observation, also subscribe to `refund.created`, `refund.processed`, `refund.failed` and `refund.speed_changed`, and wire the exported server helpers into an application subscriber. These events are not handled as native refund-accounting updates by registering the provider alone. A speed change updates informational observations only; it never means settlement or initiates a refund.
+
+See [server integration](docs/server-integration.md) for the helper contract, shared locking hook and subscriber requirements. Use durable Medusa event infrastructure and monitor failed jobs; HTTP acknowledgement is not proof of successful reconciliation.
+
+## Refunds and reconciliation
+
+Initiate refunds through Medusa's native refund workflow. Preserve its original operation identity for retries. A pending gateway refund is an accepted request, not completed bank settlement. `last_refund_initial_status` is an immutable response snapshot; retrieve the gateway refund for its current state.
+
+The exported reconciliation helpers compare authenticated gateway payment/order/refund information with native records. They never issue another refund, fabricate a native financial record, or automatically resolve ambiguous Dashboard activity. Review discrepancies before retrying an uncertain request. Applications can supply a `refund_guard` and a common session-keyed lock to coordinate refund execution, observation and order completion.
+
+Read [operations and validation](docs/operations.md) for pending/failed refund handling, uncertain outcomes, monitoring and test limits.
 
 ## Development
 
-All commands run through Docker Compose. Run `docker compose build tools`, then `docker compose run --rm tools npm run typecheck`, `docker compose run --rm tools npm test`, and `docker compose run --rm tools npm run build`. Run formatting through the same tools service. The committed lockfile is used by `npm ci` in the Docker build.
+Use the repository's Docker Compose tools service:
 
-No live gateway operations belong in automated tests. Mocked tests establish local contracts only. Account credentials, automatic-capture configuration, region activation and a reachable test webhook endpoint are required for separately authorized end-to-end validation.
-
-## Validation scope
-
-The native lifecycle fixture in `tests/native` is run in the consuming application CI image against a fresh disposable PostgreSQL database. `run.mjs` refuses development database targets and drops its temporary database in a finally block. Mount the built provider at `/server/owned-razorpay` and register its `/server/owned-razorpay/dist` provider path with fixture-only test options in the isolated consumer config. All gateway calls in this fixture are intercepted; no Razorpay transactions are created. It verifies persisted native authorization/capture/refund behavior, including a lost refund response and keyed retry.
-
-This repository has no checkout UI, merchant acceptance policy, or application-specific routes. Those belong to the consuming application. A production release, account activation and real gateway verification are separate review gates.
-
-Failed gateway attempts can be retried on the same order. A replacement attempt is accepted only after the prior bound attempt is terminally failed; authorized, captured or refunded associations are never silently rebound. Session updates include the public gateway_status so the consuming checkout can distinguish an unpaid/failed order from one awaiting automatic capture.
-
-### Refund acceptance and settlement
-
-Full and partial INR refunds use the native Medusa refund amount and operation identity. The provider validates the gateway refund ID, payment association, exact paise amount, currency and acceptance status. Failed or unknown refund states are rejected. A `pending` response records an accepted refund request, not completed bank settlement; the initial gateway response status is exposed as `last_refund_initial_status` in native payment data. This immutable response snapshot is informational, not a refund ledger or a current settlement status. Later gateway processing does not change it. Retrieve the referenced gateway refund for its current processing state.
-
-If a response is lost or inconsistent, reconcile the gateway operation before issuing another refund. Preserve the original native idempotency identity for a retry; a new operation identity represents a new monetary request. Out-of-band refunds and later refund failures are not automatically synchronized by the current payment webhook handler.
-
-Contract: https://github.com/razorpay/razorpay-node/blob/master/lib/types/refunds.d.ts (reviewed 2026-11-06).
-
-### Application refund coordination
-
-An optional server-side `refund_guard(context, execute)` function can wrap the entire refund verification/request path. The context contains the bound native session ID. It must return `execute()`'s result and propagate errors; a failed guard prevents the gateway request. Every native caller reaches this provider method, including Admin refunds, returns and compensation. Applications can coordinate this boundary with their own order-completion policy without modifying native Medusa routes or models. This extension alone does not create a native/gateway transaction or reconcile uncertain outcomes.
-
-Refund verification covers the native Medusa 2.22.2 runtime and the provider's
-2.22.4 build dependency. Refunds below INR 1.00 are rejected before gateway access,
-matching the [normal refund API](https://razorpay.com/docs/api/refunds/create-normal/).
-The [idempotent normal refund API](https://razorpay.com/docs/api/refunds/normal-refunds-idempotent/)
-requires replaying the same body and operation key; uncertain outcomes are never
-automatically retried by this provider. Native isolated tests include concurrent
-cumulative refund caps and refunding the exact remaining balance. They simulate
-the gateway and do not prove real gateway settlement.
-
-## Reusable server-side integration APIs
-
-The package exports payment plumbing independently of any store. Never import
-these APIs or their configured options into a storefront/client bundle.
-
-```ts
-import {
-  reconcileRazorpayPayment, gatewayReader,
-  signedRefundEvent, observeRazorpayRefund,
-  verifyRazorpayWebhook, verifyRazorpayCheckout,
-} from "@abhi1693/medusa-payment-razorpay"
-
-const options = {
-  mode: "test" as const,
-  key_id: process.env.RAZORPAY_KEY_ID!,
-  key_secret: process.env.RAZORPAY_KEY_SECRET!,
-  provider_id: "pp_razorpay_razorpay", // match your native registration ID
-}
-const report = await reconcileRazorpayPayment(container, nativePaymentId, options)
-// Read-only authenticated payment/order/refund checks, exact INR totals,
-// bounded pagination/deadline and explicit discrepancy/limitation reporting.
-const refund = signedRefundEvent(payload, process.env.RAZORPAY_WEBHOOK_SECRET)
-if (refund) {
-  await observeRazorpayRefund(container, refund, {
-    get: gatewayReader(options),
-    reconcile: id => reconcileRazorpayPayment(container, id, options),
-    coordinate: withFinancialCoordination,
-  })
-}
+```sh
+docker compose build tools
+docker compose run --rm tools npm run typecheck
+docker compose run --rm tools npm test
+docker compose run --rm tools npm run build
+docker compose run --rm tools npm run format:check
 ```
 
-`coordinate(sessionIds, work)` is an application-supplied async critical section.
-Use the same session-keyed lock for this observation, `refund_guard`, and your
-order-completion gate. The library does not choose a database, create a ledger,
-change merchant settings or overwrite environment configuration. The observer
-resolves native payment sessions through authenticated gateway order notes,
-ignores unassociated payments and throws on discrepancies. It never creates a
-refund or automatically imports ambiguous external financial history.
+The image installs the committed lockfile with `npm ci`; the tools container has no network access. Automated gateway tests are simulated and do not create Razorpay payments or refunds. Native lifecycle fixtures require an isolated consuming Medusa CI environment; see [validation scope](docs/operations.md#validation-scope).
 
-`verifyRazorpayWebhook(rawBytes, signature, secret)` checks the exact HMAC bytes;
-`verifyRazorpayCheckout(storedOrderId, paymentId, signature, keySecret)` verifies
-Checkout's signature. Ownership, terms acceptance and trusted cart totals remain
-the consuming application's responsibility. `signedRefundEvent` supports raw
-Buffers and their exact JSON queue serialization, never body reserialization.
+## License
 
-Register a subscriber for Medusa's `PaymentWebhookEvents.WebhookReceived` with a
-stable subscriber ID, filter your provider registration, and call these APIs.
-Enable `refund.created`, `refund.processed`, `refund.failed` and
-`refund.speed_changed` subscriptions at
-the gateway; payment capture events remain handled by the native payment worker.
-Use Medusa's documented Redis Event Module with persistent AOF storage,
-`noeviction`, retries and retained failed jobs. A successful HTTP acknowledgement
-means durable enqueue, not successful reconciliation. Monitor failures and queue
-lag. Native Medusa 2.22.2 already restores serialized webhook Buffer bytes.
-
-Store-specific checkout UI, cart review/ownership, order-completion policy,
-invoice behavior, authorization and Redis provisioning stay in the consuming
-application. An independent dashboard refund cannot join an application lock or
-atomically undo an already completed order; discrepancies require review. These
-interfaces are test-mode/INR only and do not assert production deployment or bank
-settlement readiness.
-
-`refund.speed_changed` is an authenticated current-state observation using the
-same replay-safe path. Reports include `speed_requested` and `speed_processed`
-when returned by the gateway. A speed change never means the refund completed,
-never changes native accounting, and never initiates another refund. Existing
-webhook subscriptions need no changes when these events are already enabled.
-Official semantics: https://razorpay.com/docs/webhooks/refunds/.
-
-An owned captured-payment refund that arrives before native Payment creation
-remains retryable, so a browser/webhook association race is not silently ignored.
-Uncaptured automatic refunds and genuinely unassociated gateway orders do not
-create native payments or refunds. Exhausted association retries require review.
+[MIT](LICENSE) © Abhimanyu Saharan.
