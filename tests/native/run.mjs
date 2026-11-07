@@ -7,6 +7,7 @@ const source = new URL(process.env.DATABASE_URL)
 if (
   !["127.0.0.1", "localhost"].includes(source.hostname) ||
   source.pathname !== "/postgres" ||
+  process.env.CI !== "true" ||
   process.env.NODE_ENV !== "test"
 )
   throw Error("Isolated CI database required")

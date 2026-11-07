@@ -19,6 +19,8 @@ import type {
 } from "@medusajs/framework/types"
 import { RazorpayGateway, type Entity, type Gateway } from "./gateway"
 import { minor, verify } from "./security"
+import { GatewayRefundReconciliationError } from "./gateway-refund-reconciliation-error"
+import { GatewayRefundPendingError } from "./gateway-refund-pending-error"
 import { observedRefundExecution } from "./refund-import-context"
 export type RefundExecutionGuard = (
   context: { session_id: string },
@@ -278,11 +280,71 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
       )
     if (key.startsWith("razorpay-observed:") && !external)
       throw new Error("Invalid observed refund operation")
+    // Reconcile a stable operation before any POST. A pending request (including
+    // a Dashboard request) blocks another debit while its outcome is unknown.
+    let prior: Entity | undefined
+    if (!external) {
+      const seen = new Set<string>()
+      let finished = false
+      let accepted = 0
+      for (let skip = 0; skip < 500; skip += 100) {
+        const page = await this.api.request<{ items: Entity[] }>(
+          "payments/" + p.id + "/refunds?count=100&skip=" + skip
+        )
+        if (!Array.isArray(page.items))
+          throw new Error("Invalid gateway refund listing")
+        for (const entry of page.items) {
+          if (
+            !/^rfnd_[A-Za-z0-9]+$/.test(entry.id) ||
+            seen.has(entry.id) ||
+            entry.payment_id !== p.id ||
+            entry.currency !== d.currency ||
+            !Number.isSafeInteger(entry.amount) ||
+            entry.amount <= 0 ||
+            !["pending", "processed", "failed"].includes(entry.status)
+          )
+            throw new Error("Invalid or duplicated gateway refund association")
+          seen.add(entry.id)
+          if (entry.status !== "failed") accepted += entry.amount
+          if (!Number.isSafeInteger(accepted) || accepted > d.amount)
+            throw new Error("Gateway refund totals exceed payment")
+          if (entry.notes?.medusa_refund_key === idempotency) {
+            if (prior) throw new Error("Ambiguous gateway refund operation")
+            prior = await this.api.request<Entity>("refunds/" + entry.id)
+            if (
+              prior.id !== entry.id ||
+              prior.notes?.medusa_refund_key !== idempotency ||
+              prior.notes?.medusa_payment_session_id !== d.session_id
+            )
+              throw new Error("Gateway refund operation detail mismatch")
+          } else if (entry.status === "pending") {
+            throw new GatewayRefundPendingError(entry.id)
+          }
+        }
+        if (page.items.length < 100) {
+          finished = true
+          break
+        }
+      }
+      if (!finished)
+        throw new Error("Gateway refund reconciliation limit exceeded")
+      if (
+        !prior &&
+        p.amount_refunded !== undefined &&
+        p.amount_refunded !== accepted
+      )
+        throw new Error(
+          "Gateway refund totals changed; reconcile before retrying"
+        )
+      if (!prior && amount > d.amount - accepted)
+        throw new Error("Refund exceeds remaining gateway balance")
+    }
     // Reserved observed operations acknowledge existing processed funds only.
     // No client-supplied data can turn this path into a gateway POST.
     const refund = external
       ? await this.api.request<Entity>("refunds/" + external[1])
-      : await this.api.request<Entity>(
+      : prior ||
+        (await this.api.request<Entity>(
           "payments/" + p.id + "/refund",
           {
             amount,
@@ -293,12 +355,14 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
             },
           },
           { "X-Refund-Idempotency": idempotency }
-        )
+        ))
     if (
       external &&
       (refund.id !== external[1] ||
         refund.status !== "processed" ||
-        refund.notes?.medusa_refund_key !== undefined)
+        refund.notes?.medusa_refund_key !== importing?.origin_hash ||
+        (importing?.origin_hash !== undefined &&
+          refund.notes?.medusa_payment_session_id !== d.session_id))
     )
       throw new Error(
         "Observed refund must be processed and external to native refund execution"
@@ -313,6 +377,10 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
       throw new Error(
         "Refund was not accepted with the expected payment, amount and currency; reconcile using the same operation key"
       )
+    if (refund.status === "pending")
+      throw new GatewayRefundPendingError(refund.id)
+    if (!external && prior)
+      throw new GatewayRefundReconciliationError(refund.id)
     // This is an immutable response snapshot, not a refreshed settlement status.
     const data = { ...d }
     delete data.last_refund_status

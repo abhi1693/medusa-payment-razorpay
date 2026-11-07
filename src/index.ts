@@ -26,3 +26,7 @@ export {
 } from "./refund-recovery"
 export type { RefundRecoveryEvent } from "./refund-recovery"
 export { PendingRefundRecoveryError } from "./refund-recovery-error"
+
+export { GatewayRefundPendingError } from "./gateway-refund-pending-error"
+
+export { GatewayRefundReconciliationError } from "./gateway-refund-reconciliation-error"

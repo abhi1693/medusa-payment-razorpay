@@ -106,6 +106,10 @@ beforeEach(() => {
   )
   payments = {
     retrievePayment: vi.fn(async () => native),
+    listRefunds: vi.fn(async () => [
+      ...native.refunds,
+      ...(native.failed_attempts || []),
+    ]),
     listPaymentSessions: async () => [
       { id: "payses_native", payment: { id: native.id } },
     ],
@@ -116,13 +120,26 @@ beforeEach(() => {
         context: { idempotency_key: input.idempotency_key },
       })
       native.data = output.data
-      native.refunds.push({
-        id: "refund_" + native.refunds.length,
-        amount: input.amount,
-        status: "succeeded",
-        idempotency_key: input.idempotency_key,
-        metadata: input.metadata,
-      })
+      const restored = native.failed_attempts?.find(
+        (r: any) => r.idempotency_key === input.idempotency_key
+      )
+      if (restored) {
+        native.failed_attempts = native.failed_attempts.filter(
+          (r: any) => r !== restored
+        )
+        native.refunds.push({
+          ...restored,
+          status: "succeeded",
+          deleted_at: undefined,
+        })
+      } else
+        native.refunds.push({
+          id: "refund_" + native.refunds.length,
+          amount: input.amount,
+          status: "succeeded",
+          idempotency_key: input.idempotency_key,
+          metadata: input.metadata,
+        })
       if (fail === "refund") {
         fail = ""
         throw Error("Crash after native refund commit")
@@ -310,6 +327,7 @@ it("recognizes native operation identity and flags later failure without fabrica
     medusa_refund_key: createHash("sha256")
       .update("order_gateway:native_key")
       .digest("hex"),
+    medusa_payment_session_id: "payses_native",
   }
   expect((await importRazorpayRefund(scope, event, options)).status).toBe(
     "native"
@@ -340,7 +358,15 @@ it("defers a recent pending reservation without deleting or duplicating it", asy
       amount: "10.00",
       status: "pending",
       idempotency_key: "razorpay-observed:rfnd_external",
-      metadata: { razorpay_import: { credit_paise: 1000 } },
+      metadata: {
+        razorpay_import: {
+          credit_paise: 1000,
+          gateway_refund_id: "rfnd_external",
+          gateway_payment_id: "pay_gateway",
+          order_id: "order_native",
+          amount_paise: 1000,
+        },
+      },
     },
   ]
   payments.refundPayment.mockRejectedValue(
@@ -452,4 +478,119 @@ it("does not create new credit on a canceled order", async () => {
   )
   expect(payments.refundPayment).not.toHaveBeenCalled()
   expect(order.transactions).toHaveLength(0)
+})
+
+it.each(["processed", "failed"])(
+  "reconciles a native pending request that later becomes %s without another gateway debit",
+  async (status) => {
+    native.failed_attempts = [
+      {
+        id: "refund_original",
+        idempotency_key: "original_operation",
+        amount: 10,
+        status: "failed",
+        deleted_at: new Date().toISOString(),
+      },
+    ]
+    refunds[0].notes = {
+      medusa_refund_key: createHash("sha256")
+        .update("order_gateway:original_operation")
+        .digest("hex"),
+      medusa_payment_session_id: "payses_native",
+    }
+    refunds[0].status = "pending"
+    expect((await importRazorpayRefund(scope, event, options)).status).toBe(
+      "pending"
+    )
+    expect(native.refunds).toHaveLength(0)
+    refunds[0].status = status
+    if (status === "failed") gateway.amount_refunded = 0
+    await importRazorpayRefund(scope, event, options)
+    await importRazorpayRefund(scope, event, options)
+    expect(native.failed_attempts).toHaveLength(1)
+    expect(native.refunds).toHaveLength(status === "processed" ? 1 : 0)
+    expect(order.transactions).toHaveLength(status === "processed" ? 1 : 0)
+    expect(order.credit_lines).toHaveLength(status === "processed" ? 1 : 0)
+    if (status === "processed")
+      expect(
+        native.refunds[0].metadata.razorpay_import.original_native_refund_id
+      ).toBe("refund_original")
+    expect(posts).toBe(0)
+  }
+)
+it("defers an in-flight native operation rather than adopting it as an external refund", async () => {
+  native.failed_attempts = [
+    {
+      id: "refund_original",
+      idempotency_key: "original_operation",
+      amount: 10,
+      status: "pending",
+    },
+  ]
+  refunds[0].notes = {
+    medusa_refund_key: createHash("sha256")
+      .update("order_gateway:original_operation")
+      .digest("hex"),
+    medusa_payment_session_id: "payses_native",
+  }
+  await expect(
+    importRazorpayRefund(scope, event, options)
+  ).rejects.toBeInstanceOf(PendingRefundRecoveryError)
+  expect(posts).toBe(0)
+})
+
+it("restores a failed canonical attempt with its original frozen credit intent", async () => {
+  const original = payments.refundPayment.getMockImplementation()
+  payments.refundPayment.mockImplementationOnce(async (input: any) => {
+    native.failed_attempts = [
+      {
+        ...input,
+        id: "refund_failedImport",
+        amount: input.amount,
+        metadata: input.metadata,
+        status: "failed",
+        deleted_at: new Date().toISOString(),
+      },
+    ]
+    throw Error("Interrupted provider acknowledgement")
+  })
+  await expect(importRazorpayRefund(scope, event, options)).rejects.toThrow(
+    "Interrupted"
+  )
+  order.summary.pending_difference = -4
+  await importRazorpayRefund(scope, event, options)
+  expect(native.refunds).toHaveLength(1)
+  expect(native.refunds[0].id).toBe("refund_failedImport")
+  expect(order.credit_lines[0].amount).toBe("10.00")
+  expect(native.refunds[0].metadata.razorpay_import.credit_paise).toBe(1000)
+  expect(posts).toBe(0)
+})
+
+it("preserves the original actor, reason and note on a processed deferred native refund", async () => {
+  native.failed_attempts = [
+    {
+      id: "refund_original",
+      idempotency_key: "original",
+      amount: 10,
+      status: "failed",
+      deleted_at: new Date().toISOString(),
+      created_by: "user_fixture",
+      refund_reason_id: "refres_fixture",
+      note: "Original authorized refund",
+    },
+  ]
+  refunds[0].notes = {
+    medusa_refund_key: createHash("sha256")
+      .update("order_gateway:original")
+      .digest("hex"),
+    medusa_payment_session_id: "payses_native",
+  }
+  await importRazorpayRefund(scope, event, options)
+  expect(payments.refundPayment).toHaveBeenCalledWith(
+    expect.objectContaining({
+      created_by: "user_fixture",
+      refund_reason_id: "refres_fixture",
+      note: "Original authorized refund",
+    })
+  )
 })

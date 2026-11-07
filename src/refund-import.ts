@@ -13,6 +13,7 @@ import {
   ChangeActionType,
   PaymentEvents,
   MedusaError,
+  SoftDeletableFilterKey,
 } from "@medusajs/framework/utils"
 import {
   gatewayReader,
@@ -117,11 +118,28 @@ export async function importRazorpayRefund(
       relations: ["refunds"],
     })
     const refunds = native.refunds || []
+    const attempts = await payments.listRefunds(
+      { payment_id: nativeId },
+      {
+        ...fresh,
+        filters: { [SoftDeletableFilterKey]: { withDeleted: true } },
+        take: 501,
+      }
+    )
+    if (attempts.length > 500)
+      throw new Error("Native refund attempt review limit exceeded")
     // Native-created gateway refunds carry an opaque operation hash. This
     // separates them from Dashboard refunds even if the webhook races commit.
     const nativeKey = record(refund.notes).medusa_refund_key
+    let originHash: string | undefined
+    let originRefundId: string | undefined
+    const originDetails: {
+      created_by?: string
+      note?: string
+      refund_reason_id?: string
+    } = {}
     if (nativeKey !== undefined) {
-      const match = refunds.find(
+      const matches = attempts.filter(
         (r) =>
           operation(
             String(report.gateway_order_id),
@@ -129,21 +147,36 @@ export async function importRazorpayRefund(
           ) === nativeKey
       )
       if (
-        !match ||
-        record(match).status !== "succeeded" ||
-        paise(match.amount) !== refund.amount
+        matches.length !== 1 ||
+        paise(matches[0].amount) !== refund.amount ||
+        record(refund.notes).medusa_payment_session_id !== session
       )
         throw new Error(
           "Native refund operation has not committed or mismatches gateway"
         )
-      if (refund.status === "failed")
-        throw new Error(
-          "Accepted native refund failed at gateway; accounting review required"
-        )
-      return {
-        status: "native",
-        refund_id: match.id,
-        gateway_status: String(refund.status),
+      const match = matches[0]
+      if (record(match).status === "succeeded") {
+        if (refund.status === "failed")
+          throw new Error(
+            "Accepted native refund failed at gateway; accounting review required"
+          )
+        return {
+          status: "native",
+          refund_id: match.id,
+          gateway_status: String(refund.status),
+        }
+      }
+      if (record(match).status === "pending")
+        throw new PendingRefundRecoveryError()
+      if (record(match).status !== "failed" || !record(match).deleted_at)
+        throw new Error("Native refund attempt is not safely recoverable")
+      // The failed native attempt remains an audit record. A processed gateway
+      // request receives one canonical successful native import, GET-only.
+      originHash = String(nativeKey)
+      originRefundId = match.id
+      for (const field of ["created_by", "note", "refund_reason_id"] as const) {
+        const value = record(match)[field]
+        if (typeof value === "string") originDetails[field] = value
       }
     }
     if (refund.status !== "processed")
@@ -160,7 +193,7 @@ export async function importRazorpayRefund(
         "Gateway refund totals are inconsistent; retry reconciliation"
       )
     const key = "razorpay-observed:" + event.refund_id
-    let existing = refunds.find((r) => record(r).idempotency_key === key)
+    let existing = attempts.find((r) => record(r).idempotency_key === key)
     // All existing refunds must have individual verified associations, not just
     // matching totals. No amount-based adoption or historical fallback.
     for (const r of refunds) {
@@ -272,25 +305,41 @@ export async function importRazorpayRefund(
     // order can accept an already-owed payout, never a new order credit.
     if (order.status === "canceled" && Number(credit) > 0)
       throw new Error("Canceled order requires an existing refund credit")
+    if (existing) {
+      const stored = record(record(record(existing).metadata).razorpay_import)
+      if (
+        paise(existing.amount) !== refund.amount ||
+        stored.gateway_refund_id !== event.refund_id ||
+        stored.gateway_payment_id !== event.payment_id ||
+        stored.order_id !== orderId ||
+        stored.amount_paise !== refund.amount ||
+        stored.original_native_refund_id !== originRefundId
+      )
+        throw new Error("Native refund import intent mismatch")
+    }
     const resumePending = !!existing && record(existing).status === "pending"
-    if (!existing || resumePending) {
+    if (!existing || resumePending || record(existing).status === "failed") {
       try {
-        await observedRefundExecution.run({ session, key }, () =>
-          payments.refundPayment({
-            payment_id: nativeId,
-            amount: major(Number(refund.amount)),
-            idempotency_key: key,
-            note: "Verified Razorpay Dashboard refund",
-            metadata: {
-              razorpay_import: {
-                gateway_refund_id: event.refund_id,
-                gateway_payment_id: event.payment_id,
-                order_id: orderId,
-                amount_paise: refund.amount,
-                credit_paise: credit,
+        await observedRefundExecution.run(
+          { session, key, origin_hash: originHash },
+          () =>
+            payments.refundPayment({
+              payment_id: nativeId,
+              amount: major(Number(refund.amount)),
+              idempotency_key: key,
+              ...originDetails,
+              note: originDetails.note || "Verified Razorpay processed refund",
+              metadata: {
+                razorpay_import: {
+                  gateway_refund_id: event.refund_id,
+                  gateway_payment_id: event.payment_id,
+                  order_id: orderId,
+                  amount_paise: refund.amount,
+                  credit_paise: credit,
+                  original_native_refund_id: originRefundId,
+                },
               },
-            },
-          })
+            })
         )
       } catch (error) {
         if (
