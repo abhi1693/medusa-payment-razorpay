@@ -12,7 +12,7 @@ Contract: https://github.com/razorpay/razorpay-node/blob/master/lib/types/refund
 
 A timeout during order creation can leave an unpaid Razorpay order without a native session association. Do not blindly retry the POST. Inspect the gateway order and receipt, then recover or expire the session through an operator workflow. Order initiation does not provide crash-proof exactly-once semantics.
 
-For refunds, retry only the same native operation with its original idempotency identity and body after reconciling the gateway outcome. A new identity is a new monetary request. Dashboard refunds and later failures do not automatically update native financial records. Do not delete a native refund to represent a gateway failure: that alone does not reverse Medusa order or payment-collection accounting.
+For refunds, retry only the same native operation with its original idempotency identity and body after reconciling the gateway outcome. A new identity is a new monetary request. With the optional importer wired, verified processed Dashboard refunds can update native financial records. Pending/failed Dashboard refunds do not create refund accounting. A later failure of a Medusa-origin accepted refund still requires review. Do not delete a native refund to represent a gateway failure: that alone does not reverse Medusa order or payment-collection accounting.
 
 ## Delivery and monitoring
 

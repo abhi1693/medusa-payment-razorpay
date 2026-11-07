@@ -228,7 +228,11 @@ describe("native provider lifecycle", () => {
     })
     const calls = request.mock.calls.filter((c) => c[0].endsWith("/refund"))
     expect(calls[0]).toEqual(calls[1])
-    expect(calls[0][1]).toEqual({ amount: 100, speed: "normal" })
+    expect(calls[0][1]).toMatchObject({
+      amount: 100,
+      speed: "normal",
+      notes: { medusa_payment_session_id: data.session_id },
+    })
     expect(calls[0][2]["X-Refund-Idempotency"]).toMatch(/^[a-f0-9]{64}$/)
   })
   it("fails closed without a refund operation key", async () =>
@@ -470,7 +474,7 @@ describe("refund execution security boundary", () => {
     })
     expect(request).toHaveBeenCalledWith(
       "payments/pay_123/refund",
-      { amount: value.paise, speed: "normal" },
+      expect.objectContaining({ amount: value.paise, speed: "normal" }),
       expect.any(Object)
     )
   })

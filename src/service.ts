@@ -19,6 +19,7 @@ import type {
 } from "@medusajs/framework/types"
 import { RazorpayGateway, type Entity, type Gateway } from "./gateway"
 import { minor, verify } from "./security"
+import { observedRefundExecution } from "./refund-import-context"
 export type RefundExecutionGuard = (
   context: { session_id: string },
   execute: () => Promise<RefundPaymentOutput>
@@ -238,6 +239,12 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
   async refundPayment(input: RefundPaymentInput): Promise<RefundPaymentOutput> {
     const d = this.data(input)
     const execute = () => this.refundAtGateway(input)
+    const observed = observedRefundExecution.getStore()
+    if (
+      observed?.session === d.session_id &&
+      observed.key === input.context?.idempotency_key
+    )
+      return execute() // The importer owns the outer financial critical section.
     return this.options.refund_guard
       ? this.options.refund_guard({ session_id: d.session_id }, execute)
       : execute()
@@ -260,11 +267,42 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     const idempotency = createHash("sha256")
       .update(d.order_id + ":" + key)
       .digest("hex")
-    const refund = await this.api.request<Entity>(
-      "payments/" + p.id + "/refund",
-      { amount, speed: "normal" },
-      { "X-Refund-Idempotency": idempotency }
+    const external = /^razorpay-observed:(rfnd_[A-Za-z0-9]+)$/.exec(key)
+    const importing = observedRefundExecution.getStore()
+    if (
+      external &&
+      (importing?.key !== key || importing.session !== d.session_id)
     )
+      throw new Error(
+        "Observed refund keys are reserved for the verified importer"
+      )
+    if (key.startsWith("razorpay-observed:") && !external)
+      throw new Error("Invalid observed refund operation")
+    // Reserved observed operations acknowledge existing processed funds only.
+    // No client-supplied data can turn this path into a gateway POST.
+    const refund = external
+      ? await this.api.request<Entity>("refunds/" + external[1])
+      : await this.api.request<Entity>(
+          "payments/" + p.id + "/refund",
+          {
+            amount,
+            speed: "normal",
+            notes: {
+              medusa_refund_key: idempotency,
+              medusa_payment_session_id: d.session_id,
+            },
+          },
+          { "X-Refund-Idempotency": idempotency }
+        )
+    if (
+      external &&
+      (refund.id !== external[1] ||
+        refund.status !== "processed" ||
+        refund.notes?.medusa_refund_key !== undefined)
+    )
+      throw new Error(
+        "Observed refund must be processed and external to native refund execution"
+      )
     if (
       !/^rfnd_[A-Za-z0-9]+$/.test(refund.id) ||
       refund.payment_id !== p.id ||

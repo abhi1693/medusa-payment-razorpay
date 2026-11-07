@@ -91,3 +91,15 @@ requires replaying the same body and operation key; uncertain outcomes are never
 automatically retried by this provider. Native isolated tests include concurrent
 cumulative refund caps and refunding the exact remaining balance. They simulate
 the gateway and do not prove real gateway settlement.
+
+## Processed Dashboard refund imports
+
+Use `importRazorpayRefund(container, event, options)` from a trusted backend subscriber after `signedRefundEvent` verifies the raw signed payload. Supply the same explicit test-account options as reconciliation plus `coordinate(sessionIds, work)` using the same cross-worker financial lock as your refund guard and completion gate.
+
+The importer fetches the refund, payment and order independently; checks native capture, payment/session/order binding, exact INR amounts and cumulative gateway totals; and waits for `processed` state. An external `pending` or `failed` refund changes no financial records. Speed events fetch current state and do not independently advance settlement.
+
+For processed external refunds, it uses the canonical native key `razorpay-observed:<gateway-refund-id>`. This reserved provider path only GETs and verifies an existing processed external refund; it never POSTs a refund. The native refund stores immutable import intent in metadata. Native order transactions and credit-line OrderChange/action records have unique refund references and are resumed on replay. No custom model or ledger is introduced. New native refund requests carry an opaque operation hash in gateway notes, keeping a racing native refund distinct from Dashboard activity.
+
+The initial importer requires balanced native order accounting. An active order edit/return, unknown individual refund association, canceled order, failed native settlement or a pending native reservation is retained for review rather than repaired by guessing. It does not migrate demo history or use amount-only matching. Never change an uncertain native refund's operation identity or body when upgrading code.
+
+A committed native refund, transaction, pending credit change, credit action and confirmed credit are recovered through their native identities. A hard crash inside Medusa's own pending refund reservation can still require review: there is no supported public takeover/fencing transition for an in-flight native refund. The importer does not delete that reservation or claim exactly-once cross-system execution.
