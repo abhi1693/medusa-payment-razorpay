@@ -116,7 +116,6 @@ export class RazorpayGateway implements Gateway {
     ) =>
       log(level, gatewayLogEvent, {
         correlation,
-        operation: "http_request",
         method,
         ...fields,
         duration_ms: Math.max(0, Date.now() - started),

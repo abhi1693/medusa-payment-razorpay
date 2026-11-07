@@ -61,7 +61,6 @@ export function defineLogEvent(name: string, schema: Record<string, Field>) {
   return { name, schema }
 }
 export const gatewayLogEvent = defineLogEvent("razorpay.gateway", {
-  operation: label,
   outcome: label,
   method: logFields.code,
   provider_code: logFields.code,

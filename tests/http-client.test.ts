@@ -27,6 +27,7 @@ it.each(["get", "post", "put", "patch", "delete"] as const)(
       redirect: "error",
     })
     const logs = sink.mock.calls.map((c) => JSON.parse(c[0]))
+    expect(logs[0]).not.toHaveProperty("operation")
     expect(logs[0]).toMatchObject({
       event: "razorpay.gateway",
       method: verb.toUpperCase(),

@@ -119,7 +119,6 @@ it("accepts a new operation without URL parsing or a central list", async () => 
     "debug"
   ).request("future/opaque", undefined, undefined)
   expect(JSON.parse(sink.mock.calls[0][0])).toMatchObject({
-    operation: "http_request",
     method: "GET",
     outcome: "started",
   })
@@ -149,7 +148,6 @@ it("accepts a bounded new provider code without a value list", async () => {
     )
   ).rejects.toThrow()
   expect(JSON.parse(sink.mock.calls[0][0])).toMatchObject({
-    operation: "http_request",
     provider_code: "NEW_UPSTREAM_ERROR",
   })
   expect(JSON.stringify(sink.mock.calls)).not.toContain("private")
@@ -181,7 +179,6 @@ it("preserves injected Medusa debug and error sinks", async () => {
   expect(sink.error).toHaveBeenCalled()
   expect(JSON.parse(sink.error.mock.calls[0][0])).toMatchObject({
     level: "critical",
-    operation: "http_request",
     method: "POST",
     http_status: 401,
   })

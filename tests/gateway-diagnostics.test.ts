@@ -40,7 +40,6 @@ describe("sanitized gateway diagnostics", () => {
     )
     expect(data).toMatchObject({
       event: "razorpay.gateway",
-      operation: "http_request",
       outcome: "http_error",
       http_status: 400,
       provider_code: "BAD_REQUEST_ERROR",
@@ -87,7 +86,6 @@ describe("sanitized gateway diagnostics", () => {
     expect(
       JSON.parse([...log.warn.mock.calls, ...log.error.mock.calls][0][0])
     ).toMatchObject({
-      operation: "http_request",
       category: "unclassified",
     })
     expect(
@@ -106,7 +104,6 @@ describe("sanitized gateway diagnostics", () => {
     expect(
       JSON.parse([...log.warn.mock.calls, ...log.error.mock.calls][0][0])
     ).toMatchObject({
-      operation: "http_request",
       http_status: 502,
       provider_code: "UNRECOGNIZED",
     })
@@ -183,7 +180,6 @@ describe("sanitized gateway diagnostics", () => {
     expect(
       JSON.parse([...log.warn.mock.calls, ...log.error.mock.calls][0][0])
     ).toMatchObject({
-      operation: "http_request",
       outcome: "invalid_response",
     })
   })
