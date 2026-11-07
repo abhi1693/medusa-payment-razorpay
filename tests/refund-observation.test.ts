@@ -114,7 +114,7 @@ it("returns authenticated reconciliation under the shared financial guard", asyn
   expect(await observeRazorpayRefund(scope, event)).toBe(report)
   expect(sessions).toHaveBeenCalledWith(
     { id: "payses_fixture" },
-    { relations: ["payment"], take: 1 }
+    { relations: ["payment"], take: 1, options: { refresh: true } }
   )
   expect(mocks.reconcile).toHaveBeenCalledWith("pay_native")
 })

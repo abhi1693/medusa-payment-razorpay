@@ -78,6 +78,7 @@ export async function reconcileRazorpayPayment(
     .resolve<IPaymentModuleService>(Modules.PAYMENT)
     .retrievePayment(id, {
       relations: ["captures", "refunds", "payment_session"],
+      options: { refresh: true },
     })
   const data = record(native.data)
   if (

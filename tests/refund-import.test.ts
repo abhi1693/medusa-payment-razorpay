@@ -2,7 +2,8 @@ import { beforeEach, afterEach, expect, it, vi } from "vitest"
 import { createHash } from "node:crypto"
 import { importRazorpayRefund } from "../src/refund-import"
 import RazorpayProvider from "../src/service"
-let native: any,
+let emitted: any[],
+  native: any,
   order: any,
   gateway: any,
   gatewayOrder: any,
@@ -15,6 +16,7 @@ let native: any,
   posts: number,
   fail: string
 beforeEach(() => {
+  emitted = []
   posts = 0
   fail = ""
   options = {
@@ -126,6 +128,14 @@ beforeEach(() => {
     }),
   }
   orders = {
+    updateOrderChanges: async (input: any) => {
+      const c = order.changes.find((c: any) => c.id === input.id)
+      c.metadata = input.metadata
+      if (fail === "notification") {
+        fail = ""
+        throw Error("Crash after notification commit")
+      }
+    },
     listOrderChanges: async () => order.changes || [],
     createOrderChange: async (change: any) => {
       const c = {
@@ -182,7 +192,24 @@ beforeEach(() => {
         ? payments
         : key === "order"
           ? orders
-          : { graph: async () => ({ data: [{ order: { id: order.id } }] }) },
+          : key === "event_bus"
+            ? {
+                emit: async (event: any) => {
+                  emitted.push(event)
+                  if (fail === "event") {
+                    fail = ""
+                    throw Error("Crash after event enqueue")
+                  }
+                },
+              }
+            : {
+                graph: async (input: any) => ({
+                  data:
+                    input.entity === "order"
+                      ? [order]
+                      : [{ order: { id: order.id } }],
+                }),
+              },
   }
 })
 afterEach(() => {
@@ -347,4 +374,41 @@ it("rejects persisted intent and duplicate accounting mismatches", async () => {
     "transaction mismatch"
   )
   expect(posts).toBe(0)
+})
+
+it("emits the native refund event after accounting and checkpoints normal duplicate delivery", async () => {
+  await importRazorpayRefund(scope, event, options)
+  await importRazorpayRefund(scope, event, options)
+  expect(emitted).toHaveLength(1)
+  expect(emitted[0]).toMatchObject({
+    name: "payment.refunded",
+    data: {
+      id: "pay_native",
+      gateway_refund_id: "rfnd_external",
+      refund_id: native.refunds[0].id,
+    },
+  })
+  expect(order.changes[0].metadata.razorpay_refund_event_emitted).toBe(true)
+})
+it.each(["event", "notification"])(
+  "recovers %s publication interruption without duplicate accounting",
+  async (stage) => {
+    fail = stage
+    await expect(importRazorpayRefund(scope, event, options)).rejects.toThrow(
+      "Crash"
+    )
+    await importRazorpayRefund(scope, event, options)
+    expect(native.refunds).toHaveLength(1)
+    expect(order.transactions).toHaveLength(1)
+    expect(order.credit_lines).toHaveLength(1)
+    // An enqueue/marker crash may redeliver the same notification, never funds.
+    expect(emitted).toHaveLength(stage === "event" ? 2 : 1)
+  }
+)
+it("requires fresh cross-worker native reads", async () => {
+  await importRazorpayRefund(scope, event, options)
+  expect(payments.retrievePayment).toHaveBeenCalledWith(
+    "pay_native",
+    expect.objectContaining({ options: { refresh: true } })
+  )
 })

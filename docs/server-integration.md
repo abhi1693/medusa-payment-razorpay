@@ -103,3 +103,17 @@ For processed external refunds, it uses the canonical native key `razorpay-obser
 The initial importer requires balanced native order accounting. An active order edit/return, unknown individual refund association, canceled order, failed native settlement or a pending native reservation is retained for review rather than repaired by guessing. It does not migrate demo history or use amount-only matching. Never change an uncertain native refund's operation identity or body when upgrading code.
 
 A committed native refund, transaction, pending credit change, credit action and confirmed credit are recovered through their native identities. A hard crash inside Medusa's own pending refund reservation can still require review: there is no supported public takeover/fencing transition for an in-flight native refund. The importer does not delete that reservation or claim exactly-once cross-system execution.
+
+After accounting commits, the importer emits Medusa's `payment.refunded` event
+with the native payment `id`, native `refund_id` and `gateway_refund_id`. Its native
+OrderChange metadata checkpoints successful enqueue. Ordinary duplicate webhook
+notifications do not emit it again. A crash between enqueue and its checkpoint
+may redeliver the notification; consumers must use the stable refund identity to
+deduplicate side effects. This never sends funds again.
+
+Mutable payment/session relations explicitly refresh through public FindConfig
+options. Order accounting reads use Medusa Query's current-version projection,
+including totals and summary, rather than refreshing a populated versioned Order
+entity and accidentally counting historical item details. Native 2.22.2 fixtures
+cover multi-version fulfillment/delivery before import and seven notifications
+across commit-boundary recovery and full-balance replay.

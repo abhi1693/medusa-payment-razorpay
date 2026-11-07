@@ -3,6 +3,7 @@ import type {
   MedusaContainer,
   IPaymentModuleService,
   IOrderModuleService,
+  IEventBusModuleService,
 } from "@medusajs/framework/types"
 import {
   Modules,
@@ -10,6 +11,7 @@ import {
   BigNumber,
   OrderChangeType,
   ChangeActionType,
+  PaymentEvents,
 } from "@medusajs/framework/utils"
 import {
   gatewayReader,
@@ -23,6 +25,8 @@ export type RefundImportOptions = ReconciliationOptions & {
   coordinate: <T>(sessions: string[], work: () => Promise<T>) => Promise<T>
 }
 const reference = "razorpay_refund"
+// Public FindConfig ORM options force current relations after another worker commits.
+const fresh = { options: { refresh: true } }
 function major(n: number) {
   const negative = n < 0
   const a = BigInt(Math.abs(n))
@@ -75,7 +79,7 @@ export async function importRazorpayRefund(
     const payments = scope.resolve<IPaymentModuleService>(Modules.PAYMENT)
     const sessions = await payments.listPaymentSessions(
       { id: session },
-      { relations: ["payment"], take: 1 }
+      { ...fresh, relations: ["payment"], take: 1 }
     )
     const nativeId = record(record(sessions[0]).payment).id
     if (typeof nativeId !== "string")
@@ -107,6 +111,7 @@ export async function importRazorpayRefund(
     )
       throw new Error("Gateway refund changed during import; retry observation")
     const native = await payments.retrievePayment(nativeId, {
+      ...fresh,
       relations: ["refunds"],
     })
     const refunds = native.refunds || []
@@ -204,9 +209,27 @@ export async function importRazorpayRefund(
     const orderId = record(record(links[0]).order).id
     if (links.length !== 1 || typeof orderId !== "string")
       throw new Error("Unique native order association required")
-    const order = await orders.retrieveOrder(orderId, {
-      relations: ["credit_lines", "transactions", "summary"],
-    })
+    // Query applies Medusa's current-version order projection. Refreshing a
+    // populated versioned Order entity directly can include historical items.
+    const readOrder = async () => {
+      const { data } = await query.graph({
+        entity: "order",
+        fields: [
+          "id",
+          "status",
+          "currency_code",
+          "summary",
+          "total",
+          "credit_lines.*",
+          "transactions.*",
+        ],
+        filters: { id: orderId },
+      })
+      if (data.length !== 1 || data[0].id !== orderId)
+        throw new Error("Current native order projection required")
+      return data[0]
+    }
+    const order = await readOrder()
     if (order.currency_code !== "inr" || order.status === "canceled")
       throw new Error("Order cannot accept refund import")
     const pending = paise(
@@ -220,7 +243,11 @@ export async function importRazorpayRefund(
       if (r.id === existing?.id) continue
       if (
         !(order.transactions || []).some(
-          (t) =>
+          (t: {
+            reference?: string
+            reference_id?: string
+            amount?: unknown
+          }) =>
             t.reference === "refund" &&
             t.reference_id === r.id &&
             paise(t.amount) === -paise(r.amount)
@@ -256,6 +283,7 @@ export async function importRazorpayRefund(
         })
       )
       const updated = await payments.retrievePayment(nativeId, {
+        ...fresh,
         relations: ["refunds"],
       })
       existing = updated.refunds?.find((r) => record(r).idempotency_key === key)
@@ -295,11 +323,10 @@ export async function importRazorpayRefund(
         reference: "refund",
         reference_id: existing.id,
       })
-    const refreshed = await orders.retrieveOrder(orderId, {
-      relations: ["credit_lines"],
-    })
+    const refreshed = await readOrder()
     const credits = (refreshed.credit_lines || []).filter(
-      (c) => c.reference === reference && c.reference_id === existing!.id
+      (c: { reference?: string; reference_id?: string; amount?: unknown }) =>
+        c.reference === reference && c.reference_id === existing!.id
     )
     if (
       credits.length > 1 ||
@@ -312,7 +339,7 @@ export async function importRazorpayRefund(
       // order change or create an unversioned credit-line row.
       const changes = await orders.listOrderChanges(
         { order_id: orderId },
-        { relations: ["actions"], take: 501 }
+        { ...fresh, relations: ["actions"], take: 501 }
       )
       if (changes.length > 500)
         throw new Error("Order change review limit exceeded")
@@ -355,6 +382,34 @@ export async function importRazorpayRefund(
           },
         ])
       await orders.confirmOrderChange(change.id)
+    }
+    const notificationChanges = await orders.listOrderChanges(
+      { order_id: orderId },
+      { ...fresh, take: 501 }
+    )
+    if (notificationChanges.length > 500)
+      throw new Error("Order change review limit exceeded")
+    const notification = notificationChanges.filter(
+      (c) => record(c.metadata).razorpay_refund_import === existing!.id
+    )
+    if (notification.length !== 1)
+      throw new Error("Unique refund notification checkpoint required")
+    const metadata = record(notification[0].metadata)
+    if (metadata.razorpay_refund_event_emitted !== true) {
+      // Enqueue only after every accounting stage commits. Queue delivery is
+      // at least once; consumers can deduplicate by the stable refund identity.
+      await scope.resolve<IEventBusModuleService>(Modules.EVENT_BUS).emit({
+        name: PaymentEvents.REFUNDED,
+        data: {
+          id: nativeId,
+          refund_id: existing.id,
+          gateway_refund_id: event.refund_id,
+        },
+      })
+      await orders.updateOrderChanges({
+        id: notification[0].id,
+        metadata: { ...metadata, razorpay_refund_event_emitted: true },
+      })
     }
     return {
       status: "imported",
