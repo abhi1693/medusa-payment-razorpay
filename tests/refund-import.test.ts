@@ -130,6 +130,9 @@ beforeEach(() => {
     }),
   }
   orders = {
+    updateOrders: async (input: any) => {
+      order.metadata = input[0].metadata
+    },
     updateOrderChanges: async (input: any) => {
       const c = order.changes.find((c: any) => c.id === input.id)
       c.metadata = input.metadata
@@ -323,14 +326,14 @@ it("refuses ambiguous native history and unbalanced order accounting", async () 
     "lacks a verified"
   )
   native.refunds = []
-  order.summary.pending_difference = -1
+  order.summary.pending_difference = 1
   await expect(importRazorpayRefund(scope, event, options)).rejects.toThrow(
     "accounting is incomplete"
   )
   expect(payments.refundPayment).not.toHaveBeenCalled()
 })
 
-it("retains a pending native reservation for review instead of deleting or duplicating it", async () => {
+it("defers a recent pending reservation without deleting or duplicating it", async () => {
   native.refunds = [
     {
       id: "refund_waiting",
@@ -416,4 +419,37 @@ it("requires fresh cross-worker native reads", async () => {
     "pay_native",
     expect.objectContaining({ options: { refresh: true } })
   )
+})
+
+it.each(["pending", "canceled"])(
+  "pays an existing credit on %s orders without duplicate or zero credit records",
+  async (status) => {
+    order.status = status
+    order.summary.pending_difference = -10
+    await importRazorpayRefund(scope, event, options)
+    await importRazorpayRefund(scope, event, options)
+    expect(native.refunds).toHaveLength(1)
+    expect(order.transactions).toHaveLength(1)
+    expect(order.credit_lines).toHaveLength(0)
+    expect(order.changes || []).toHaveLength(0)
+    expect(emitted).toHaveLength(1)
+    expect(
+      order.metadata.razorpay_refund_notifications[native.refunds[0].id]
+    ).toBe(true)
+    expect(posts).toBe(0)
+  }
+)
+it("credits only the part exceeding an existing owed balance", async () => {
+  order.summary.pending_difference = -4
+  await importRazorpayRefund(scope, event, options)
+  expect(order.credit_lines[0].amount).toBe("6.00")
+  expect(native.refunds[0].metadata.razorpay_import.credit_paise).toBe(600)
+})
+it("does not create new credit on a canceled order", async () => {
+  order.status = "canceled"
+  await expect(importRazorpayRefund(scope, event, options)).rejects.toThrow(
+    "Canceled order"
+  )
+  expect(payments.refundPayment).not.toHaveBeenCalled()
+  expect(order.transactions).toHaveLength(0)
 })

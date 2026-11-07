@@ -221,6 +221,7 @@ export async function importRazorpayRefund(
           "status",
           "currency_code",
           "summary",
+          "metadata",
           "total",
           "credit_lines.*",
           "transactions.*",
@@ -232,14 +233,14 @@ export async function importRazorpayRefund(
       return data[0]
     }
     const order = await readOrder()
-    if (order.currency_code !== "inr" || order.status === "canceled")
+    if (order.currency_code !== "inr")
       throw new Error("Order cannot accept refund import")
     const pending = paise(
       record(order.summary).raw_pending_difference ??
         record(order.summary).pending_difference ??
         0
     )
-    if (!existing && pending !== 0)
+    if (!existing && pending > 0)
       throw new Error("Native refund accounting is incomplete; retry import")
     for (const r of refunds) {
       if (r.id === existing?.id) continue
@@ -266,6 +267,11 @@ export async function importRazorpayRefund(
       Number(credit) > Number(refund.amount)
     )
       throw new Error("Invalid persisted import accounting intent")
+    // Match native refund-credit semantics: a previously granted credit is
+    // paid out first, and only the excess receives a new credit line. A canceled
+    // order can accept an already-owed payout, never a new order credit.
+    if (order.status === "canceled" && Number(credit) > 0)
+      throw new Error("Canceled order requires an existing refund credit")
     const resumePending = !!existing && record(existing).status === "pending"
     if (!existing || resumePending) {
       try {
@@ -396,21 +402,48 @@ export async function importRazorpayRefund(
         ])
       await orders.confirmOrderChange(change.id)
     }
-    const notificationChanges = await orders.listOrderChanges(
-      { order_id: orderId },
-      { ...fresh, take: 501 }
-    )
-    if (notificationChanges.length > 500)
-      throw new Error("Order change review limit exceeded")
-    const notification = notificationChanges.filter(
-      (c) => record(c.metadata).razorpay_refund_import === existing!.id
-    )
-    if (notification.length !== 1)
-      throw new Error("Unique refund notification checkpoint required")
-    const metadata = record(notification[0].metadata)
+    let metadata: Record<string, unknown>
+    let checkpoint: (metadata: Record<string, unknown>) => Promise<unknown>
+    if (Number(credit) > 0) {
+      const notificationChanges = await orders.listOrderChanges(
+        { order_id: orderId },
+        { ...fresh, take: 501 }
+      )
+      if (notificationChanges.length > 500)
+        throw new Error("Order change review limit exceeded")
+      const notification = notificationChanges.filter(
+        (c) => record(c.metadata).razorpay_refund_import === existing!.id
+      )
+      if (notification.length !== 1)
+        throw new Error("Unique refund notification checkpoint required")
+      metadata = record(notification[0].metadata)
+      checkpoint = (value) =>
+        orders.updateOrderChanges({ id: notification[0].id, metadata: value })
+    } else {
+      // A payout against an existing credit must not create a zero-value
+      // financial change solely as a notification marker. Native order metadata
+      // checkpoints enqueue only; it is never financial authority.
+      const current = await readOrder()
+      const root = record(current.metadata)
+      const notifications = record(root.razorpay_refund_notifications)
+      metadata = {
+        razorpay_refund_event_emitted: notifications[existing.id] === true,
+      }
+      checkpoint = () =>
+        orders.updateOrders([
+          {
+            id: orderId,
+            metadata: {
+              ...root,
+              razorpay_refund_notifications: {
+                ...notifications,
+                [existing!.id]: true,
+              },
+            },
+          },
+        ])
+    }
     if (metadata.razorpay_refund_event_emitted !== true) {
-      // Enqueue only after every accounting stage commits. Queue delivery is
-      // at least once; consumers can deduplicate by the stable refund identity.
       await scope.resolve<IEventBusModuleService>(Modules.EVENT_BUS).emit({
         name: PaymentEvents.REFUNDED,
         data: {
@@ -419,10 +452,7 @@ export async function importRazorpayRefund(
           gateway_refund_id: event.refund_id,
         },
       })
-      await orders.updateOrderChanges({
-        id: notification[0].id,
-        metadata: { ...metadata, razorpay_refund_event_emitted: true },
-      })
+      await checkpoint({ ...metadata, razorpay_refund_event_emitted: true })
     }
     return {
       status: "imported",
