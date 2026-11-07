@@ -30,3 +30,6 @@ export { PendingRefundRecoveryError } from "./refund-recovery-error"
 export { GatewayRefundPendingError } from "./gateway-refund-pending-error"
 
 export { GatewayRefundReconciliationError } from "./gateway-refund-reconciliation-error"
+
+export { LOG_LEVELS, validateLogLevel } from "./diagnostics"
+export type { LogLevel } from "./diagnostics"

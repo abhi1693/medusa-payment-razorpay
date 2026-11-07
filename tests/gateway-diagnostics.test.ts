@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { RazorpayGateway } from "../src/gateway"
 afterEach(() => vi.unstubAllGlobals())
-const logger = () => ({ info: vi.fn(), warn: vi.fn() })
+const logger = () => ({
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
+})
 describe("sanitized gateway diagnostics", () => {
   it("logs safe failure facts without payloads, identifiers, headers or PII", async () => {
     const log = logger(),
@@ -30,10 +35,12 @@ describe("sanitized gateway diagnostics", () => {
         { "X-Refund-Idempotency": "private_key" }
       )
     ).rejects.toThrow("reconcile gateway state")
-    const data = JSON.parse(log.warn.mock.calls[0][0])
+    const data = JSON.parse(
+      [...log.warn.mock.calls, ...log.error.mock.calls][0][0]
+    )
     expect(data).toMatchObject({
       event: "razorpay.gateway",
-      operation: "create_refund",
+      operation: "request",
       outcome: "http_error",
       http_status: 400,
       provider_code: "BAD_REQUEST_ERROR",
@@ -41,7 +48,10 @@ describe("sanitized gateway diagnostics", () => {
       reconciliation_required: true,
     })
     expect(data.correlation).toMatch(/^[a-f0-9-]{36}$/)
-    const output = JSON.stringify(log.warn.mock.calls)
+    const output = JSON.stringify([
+      ...log.warn.mock.calls,
+      ...log.error.mock.calls,
+    ])
     for (const value of [
       "private",
       "secret",
@@ -74,14 +84,15 @@ describe("sanitized gateway diagnostics", () => {
         "unexpected/private/path"
       )
     ).rejects.toThrow()
-    expect(JSON.parse(log.warn.mock.calls[0][0])).toMatchObject({
-      operation: "other",
-      provider_code: "unrecognized",
+    expect(
+      JSON.parse([...log.warn.mock.calls, ...log.error.mock.calls][0][0])
+    ).toMatchObject({
+      operation: "request",
       category: "unclassified",
     })
-    expect(JSON.stringify(log.warn.mock.calls)).not.toMatch(
-      /PRIVATE|private|secret/
-    )
+    expect(
+      JSON.stringify([...log.warn.mock.calls, ...log.error.mock.calls])
+    ).not.toMatch(/PRIVATE|private|secret/)
   })
   it("handles non-JSON failures without exposing the body", async () => {
     const log = logger()
@@ -92,10 +103,12 @@ describe("sanitized gateway diagnostics", () => {
     await expect(
       new RazorpayGateway("key", "secret", log).request("orders/order_private")
     ).rejects.toThrow()
-    expect(JSON.parse(log.warn.mock.calls[0][0])).toMatchObject({
-      operation: "fetch_order",
+    expect(
+      JSON.parse([...log.warn.mock.calls, ...log.error.mock.calls][0][0])
+    ).toMatchObject({
+      operation: "request",
       http_status: 502,
-      provider_code: "unrecognized",
+      provider_code: "UNRECOGNIZED",
     })
   })
   it("logs transport uncertainty without the exception or a retry", async () => {
@@ -108,11 +121,13 @@ describe("sanitized gateway diagnostics", () => {
         {}
       )
     ).rejects.toThrow("reconcile gateway state")
-    expect(JSON.parse(log.warn.mock.calls[0][0])).toMatchObject({
+    expect(JSON.parse(log.error.mock.calls[0][0])).toMatchObject({
       outcome: "transport_error",
       reconciliation_required: true,
     })
-    expect(JSON.stringify(log.warn.mock.calls)).not.toMatch(/secret|private/)
+    expect(
+      JSON.stringify([...log.warn.mock.calls, ...log.error.mock.calls])
+    ).not.toMatch(/secret|private/)
     expect(fetcher).toHaveBeenCalledTimes(1)
   })
   it("does not let a failing logger change successful refund behavior", async () => {
@@ -165,8 +180,10 @@ describe("sanitized gateway diagnostics", () => {
     await expect(
       new RazorpayGateway("key", "secret", log).request("refunds/rfnd_private")
     ).rejects.toThrow("reconcile gateway state")
-    expect(JSON.parse(log.warn.mock.calls[0][0])).toMatchObject({
-      operation: "fetch_refund",
+    expect(
+      JSON.parse([...log.warn.mock.calls, ...log.error.mock.calls][0][0])
+    ).toMatchObject({
+      operation: "request",
       outcome: "invalid_response",
     })
   })
@@ -182,10 +199,13 @@ it("classifies DNS and timeout failures without exposing exception details", asy
     await expect(
       new RazorpayGateway("key", "secret", log).request("orders")
     ).rejects.toThrow("reconcile gateway state")
-    expect(JSON.parse(log.warn.mock.calls[0][0]).transport_code).toBe(
-      error.name === "TimeoutError" ? "TIMEOUT" : "ENOTFOUND"
-    )
-    expect(JSON.stringify(log.warn.mock.calls)).not.toMatch(/private|secret/)
+    expect(
+      JSON.parse([...log.warn.mock.calls, ...log.error.mock.calls][0][0])
+        .transport_code
+    ).toBe(error.name === "TimeoutError" ? "TIMEOUT" : "ENOTFOUND")
+    expect(
+      JSON.stringify([...log.warn.mock.calls, ...log.error.mock.calls])
+    ).not.toMatch(/private|secret/)
   }
 })
 it("preserves failure behavior when the warning logger throws", async () => {

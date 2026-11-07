@@ -121,8 +121,12 @@ The image installs the committed lockfile with `npm ci`; the tools container has
 
 [MIT](LICENSE) © Abhimanyu Saharan.
 
-### Safe gateway diagnostics
+### Structured logging
 
-The provider uses Medusa's injected logger (with a console fallback) for structured `razorpay.gateway` records. HTTP failures include the HTTP status, an allowlisted provider error code, a fixed error category, operation name, duration and a locally generated correlation UUID. Transport errors are distinct and include only an allowlisted transport classification. Successful refund responses log acknowledgement only; they do not imply settlement.
+Set provider option `log_level` to `debug`, `info` (default), `warning`, `error`, `critical`, or `none`. Thresholds include that severity and all higher severities; `none` emits no plugin diagnostic records. Medusa's injected logger receives JSON records; warning maps to its `warn` sink and critical maps to `error`, while the JSON `level` preserves the exact severity. A console fallback supports standalone use.
 
-Logs exclude gateway/native identifiers, amounts, URLs, credentials, headers, request/response payloads, notes, arbitrary provider descriptions and exception messages. Unknown provider details are classified as unrecognized. Logger failures do not change payment outcomes. An uncertain response never triggers an automatic monetary retry: reconcile gateway state first. The local correlation UUID is not a Razorpay request ID.
+The shared logger uses explicit event field schemas rather than global operation/error-code lists. Payment lifecycle, signed webhook handling, gateway transport, reconciliation reads and refund imports use the same JSON format. Operation phases are supplied by their call sites; the logger never parses URLs to infer them. Debug marks starts and successful reads, info marks lifecycle completion and refund-response acknowledgement, warning marks rejected operations/client HTTP failures, error marks transport/server/malformed-response failures, and critical marks authentication/authorization HTTP failures. A successful refund response is not proof of settlement.
+
+Contexts include only bounded classification labels, HTTP status, local timing, booleans and a locally generated correlation UUID as appropriate. Identifiers, amounts, URLs, credentials, headers, request/response payloads, notes, arbitrary provider descriptions and exception messages are excluded. Unknown or unsafe fields are dropped. New event schemas must use code-owned classifications and reviewed scalar validators, never pass arbitrary customer/provider objects or free-text strings. The correlation UUID is local, not a Razorpay request ID.
+
+Reconciliation/import helpers accept the same `log_level` plus an optional logger sink in their options. Logging failures do not alter financial outcomes, and diagnostics never trigger automatic monetary retries. Reconcile gateway state before retrying an uncertain outcome.

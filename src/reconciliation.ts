@@ -1,3 +1,10 @@
+import {
+  diagnostics,
+  gatewayLogEvent,
+  lifecycleLogEvent,
+  type LogLevel,
+  type DiagnosticLogger,
+} from "./diagnostics"
 import type {
   BigNumberInput,
   MedusaContainer,
@@ -6,6 +13,8 @@ import type {
 import { BigNumber, MedusaError, Modules } from "@medusajs/framework/utils"
 import { record, records } from "./records"
 export type ReconciliationOptions = {
+  log_level?: LogLevel
+  logger?: DiagnosticLogger
   mode: "test"
   key_id: string
   key_secret: string
@@ -45,29 +54,61 @@ export function gatewayReader(options: ReconciliationOptions) {
       MedusaError.Types.NOT_ALLOWED,
       "Test gateway configuration is required"
     )
+  const log = diagnostics(options.logger, options.log_level)
   const deadline = Date.now() + 30000
   return async (path: string) => {
     const remaining = deadline - Date.now()
     if (remaining <= 0)
       throw new Error("Gateway reconciliation timed out; no records changed")
-    const response = await fetch("https://api.razorpay.com/v1/" + path, {
+    log("debug", gatewayLogEvent, {
+      operation: "reconciliation_read",
       method: "GET",
-      headers: {
-        Authorization:
-          "Basic " + Buffer.from(key + ":" + secret).toString("base64"),
-      },
-      signal: AbortSignal.timeout(Math.min(15000, remaining)),
-      redirect: "error",
+      outcome: "started",
     })
-    if (!response.ok)
+    let response: Response
+    try {
+      response = await fetch("https://api.razorpay.com/v1/" + path, {
+        method: "GET",
+        headers: {
+          Authorization:
+            "Basic " + Buffer.from(key + ":" + secret).toString("base64"),
+        },
+        signal: AbortSignal.timeout(Math.min(15000, remaining)),
+        redirect: "error",
+      })
+    } catch {
+      log("error", gatewayLogEvent, {
+        operation: "reconciliation_read",
+        method: "GET",
+        outcome: "transport_error",
+        reconciliation_required: true,
+      })
+      throw new Error(
+        "Gateway reconciliation transport unavailable; no records changed"
+      )
+    }
+    if (!response.ok) {
+      log("warning", gatewayLogEvent, {
+        operation: "reconciliation_read",
+        method: "GET",
+        outcome: "http_error",
+        http_status: response.status,
+      })
       throw new Error(
         `Gateway reconciliation unavailable (HTTP ${response.status}); no records changed`
       )
+    }
+    log("debug", gatewayLogEvent, {
+      operation: "reconciliation_read",
+      method: "GET",
+      outcome: "response_received",
+      http_status: response.status,
+    })
     return record(await response.json())
   }
 }
 // Report only: never update financial records, retry a refund or issue a gateway POST.
-export async function reconcileRazorpayPayment(
+async function reconcilePayment(
   scope: MedusaContainer,
   id: string,
   options: ReconciliationOptions
@@ -226,6 +267,31 @@ export async function reconcileRazorpayPayment(
   }
 }
 
+export async function reconcileRazorpayPayment(
+  scope: MedusaContainer,
+  id: string,
+  options: ReconciliationOptions
+) {
+  const log = diagnostics(options.logger, options.log_level)
+  log("debug", lifecycleLogEvent, {
+    operation: "reconcile_payment",
+    outcome: "started",
+  })
+  try {
+    const result = await reconcilePayment(scope, id, options)
+    log(result.discrepancies.length ? "warning" : "info", lifecycleLogEvent, {
+      operation: "reconcile_payment",
+      outcome: result.discrepancies.length ? "review_required" : "completed",
+    })
+    return result
+  } catch (error) {
+    log("warning", lifecycleLogEvent, {
+      operation: "reconcile_payment",
+      outcome: "rejected",
+    })
+    throw error
+  }
+}
 export type RazorpayReconciliationReport = Awaited<
   ReturnType<typeof reconcileRazorpayPayment>
 >

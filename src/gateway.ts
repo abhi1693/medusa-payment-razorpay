@@ -1,3 +1,9 @@
+import {
+  diagnostics,
+  gatewayLogEvent,
+  type DiagnosticLogger,
+  type LogLevel,
+} from "./diagnostics"
 import { randomUUID } from "node:crypto"
 export type Entity = {
   id: string
@@ -14,23 +20,11 @@ export interface Gateway {
   request<T>(
     path: string,
     body?: unknown,
-    headers?: Record<string, string>
+    headers?: Record<string, string>,
+    operation?: string
   ): Promise<T>
 }
-export type GatewayLogger = {
-  info(message: string): void
-  warn(message: string): void
-}
-function operation(path: string) {
-  if (path === "orders") return "create_order"
-  if (/^payments\/[^/]+\/refund$/.test(path)) return "create_refund"
-  if (/^payments\/[^/]+\/refunds(?:\?|$)/.test(path)) return "list_refunds"
-  if (/^payments\/[^/]+$/.test(path)) return "fetch_payment"
-  if (/^orders\/[^/]+\/payments$/.test(path)) return "list_payments"
-  if (/^orders\/[^/]+$/.test(path)) return "fetch_order"
-  if (/^refunds\/[^/]+$/.test(path)) return "fetch_refund"
-  return "other"
-}
+export type GatewayLogger = DiagnosticLogger
 function providerError(value: unknown) {
   const error =
     value && typeof value === "object"
@@ -38,16 +32,9 @@ function providerError(value: unknown) {
       : undefined
   const detail =
     error && typeof error === "object" ? (error as Record<string, unknown>) : {}
-  const codes = [
-    "BAD_REQUEST_ERROR",
-    "GATEWAY_ERROR",
-    "SERVER_ERROR",
-    "AUTHENTICATION_ERROR",
-  ]
   return {
-    provider_code: codes.includes(String(detail.code))
-      ? detail.code
-      : "unrecognized",
+    provider_code:
+      typeof detail.code === "string" ? detail.code : "UNRECOGNIZED",
     category:
       detail.description === "invalid request sent"
         ? "invalid_request"
@@ -58,31 +45,30 @@ export class RazorpayGateway implements Gateway {
   constructor(
     private key: string,
     private secret: string,
-    private logger: GatewayLogger = console
+    private logger: GatewayLogger = console,
+    private logLevel: LogLevel = "info"
   ) {}
   async request<T>(
     path: string,
     body?: unknown,
-    headers: Record<string, string> = {}
+    headers: Record<string, string> = {},
+    action = "request"
   ): Promise<T> {
     const correlation = randomUUID()
     const started = Date.now()
-    const action = operation(path)
-    const emit = (level: "info" | "warn", fields: Record<string, unknown>) => {
-      try {
-        this.logger[level](
-          JSON.stringify({
-            event: "razorpay.gateway",
-            correlation,
-            operation: action,
-            ...fields,
-            duration_ms: Math.max(0, Date.now() - started),
-          })
-        )
-      } catch {
-        /* Observability must not alter financial outcomes. */
-      }
-    }
+    const log = diagnostics(this.logger, this.logLevel)
+    const emit = (
+      level: "debug" | "info" | "warning" | "error" | "critical",
+      fields: Record<string, unknown>
+    ) =>
+      log(level, gatewayLogEvent, {
+        correlation,
+        operation: action,
+        method: body === undefined ? "GET" : "POST",
+        ...fields,
+        duration_ms: Math.max(0, Date.now() - started),
+      })
+    emit("debug", { outcome: "started" })
     let response: Response
     try {
       response = await fetch("https://api.razorpay.com/v1/" + path, {
@@ -121,7 +107,7 @@ export class RazorpayGateway implements Gateway {
           : name === "AbortError"
             ? "ABORTED"
             : "UNCLASSIFIED"
-      emit("warn", {
+      emit("error", {
         outcome: "transport_error",
         transport_code: transport,
         reconciliation_required: true,
@@ -132,12 +118,19 @@ export class RazorpayGateway implements Gateway {
     }
     if (!response.ok) {
       const detail = await response.json().catch(() => undefined)
-      emit("warn", {
-        outcome: "http_error",
-        http_status: response.status,
-        ...providerError(detail),
-        reconciliation_required: true,
-      })
+      emit(
+        response.status === 401 || response.status === 403
+          ? "critical"
+          : response.status >= 500
+            ? "error"
+            : "warning",
+        {
+          outcome: "http_error",
+          http_status: response.status,
+          ...providerError(detail),
+          reconciliation_required: true,
+        }
+      )
       throw new Error(
         "Razorpay request failed; reconcile gateway state before retrying"
       )
@@ -146,7 +139,7 @@ export class RazorpayGateway implements Gateway {
     try {
       result = (await response.json()) as T
     } catch {
-      emit("warn", {
+      emit("error", {
         outcome: "invalid_response",
         http_status: response.status,
         reconciliation_required: true,
@@ -155,8 +148,13 @@ export class RazorpayGateway implements Gateway {
         "Razorpay response invalid; reconcile gateway state before retrying"
       )
     }
-    if (action === "create_refund")
+    if (body !== undefined)
       emit("info", {
+        outcome: "response_received",
+        http_status: response.status,
+      })
+    if (body === undefined)
+      emit("debug", {
         outcome: "response_received",
         http_status: response.status,
       })

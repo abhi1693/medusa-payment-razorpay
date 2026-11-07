@@ -1,3 +1,9 @@
+import {
+  lifecycleLogEvent,
+  diagnostics,
+  validateLogLevel,
+  type LogLevel,
+} from "./diagnostics"
 import { createHash } from "node:crypto"
 import {
   AbstractPaymentProvider,
@@ -27,6 +33,7 @@ export type RefundExecutionGuard = (
   execute: () => Promise<RefundPaymentOutput>
 ) => Promise<RefundPaymentOutput>
 export type Options = {
+  log_level?: LogLevel
   mode: "test"
   key_id: string
   key_secret: string
@@ -45,10 +52,12 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
   static identifier = "razorpay"
   protected api: Gateway
   private options: Options
+  private log: ReturnType<typeof diagnostics>
   constructor(container: Record<string, unknown>, options: Options) {
     super(container, options)
     RazorpayProvider.validateOptions(options)
     this.options = options
+    this.log = diagnostics(container.logger as any, options.log_level)
     const logger = container.logger as
       { info?: unknown; warn?: unknown } | undefined
     this.api = new RazorpayGateway(
@@ -63,10 +72,76 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
             warn: (message) =>
               (logger.warn as (s: string) => void).call(logger, message),
           }
-        : undefined
+        : undefined,
+      options.log_level
+    )
+  }
+  private async lifecycle<T>(
+    operation: string,
+    execute: () => Promise<T>
+  ): Promise<T> {
+    this.log("debug", lifecycleLogEvent, { operation, outcome: "started" })
+    try {
+      const result = await execute()
+      this.log("info", lifecycleLogEvent, {
+        operation,
+        outcome: "completed",
+      })
+      return result
+    } catch (error) {
+      this.log("warning", lifecycleLogEvent, {
+        operation,
+        outcome: "rejected",
+      })
+      throw error
+    }
+  }
+  async initiatePayment(input: InitiatePaymentInput) {
+    return this.lifecycle("initiatePayment", () =>
+      this.initiatePaymentImpl(input)
+    )
+  }
+  async updatePayment(input: UpdatePaymentInput) {
+    return this.lifecycle("updatePayment", () => this.updatePaymentImpl(input))
+  }
+  async authorizePayment(input: AuthorizePaymentInput) {
+    return this.lifecycle("authorizePayment", () =>
+      this.authorizePaymentImpl(input)
+    )
+  }
+  async getPaymentStatus(input: GetPaymentStatusInput) {
+    return this.lifecycle("getPaymentStatus", () =>
+      this.getPaymentStatusImpl(input)
+    )
+  }
+  async retrievePayment(input: RetrievePaymentInput) {
+    return this.lifecycle("retrievePayment", () =>
+      this.retrievePaymentImpl(input)
+    )
+  }
+  async capturePayment(input: CapturePaymentInput) {
+    return this.lifecycle("capturePayment", () =>
+      this.capturePaymentImpl(input)
+    )
+  }
+  async refundPayment(input: RefundPaymentInput) {
+    return this.lifecycle("refundPayment", () => this.refundPaymentImpl(input))
+  }
+  async cancelPayment(input: CancelPaymentInput) {
+    return this.lifecycle("cancelPayment", () => this.cancelPaymentImpl(input))
+  }
+  async deletePayment(input: DeletePaymentInput) {
+    return this.lifecycle("deletePayment", () => this.deletePaymentImpl(input))
+  }
+  async getWebhookActionAndData(
+    input: ProviderWebhookPayload["payload"]
+  ): Promise<WebhookActionResult> {
+    return this.lifecycle("getWebhookActionAndData", () =>
+      this.getWebhookActionAndDataImpl(input)
     )
   }
   static validateOptions(options: Record<string, unknown>) {
+    validateLogLevel(options.log_level)
     if (
       options.mode !== "test" ||
       typeof options.key_id !== "string" ||
@@ -101,7 +176,12 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     return d
   }
   private async order(d: Data) {
-    const order = await this.api.request<Entity>("orders/" + d.order_id)
+    const order = await this.api.request<Entity>(
+      "orders/" + d.order_id,
+      undefined,
+      undefined,
+      "fetch_order"
+    )
     if (
       order.id !== d.order_id ||
       order.amount !== d.amount ||
@@ -130,7 +210,12 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     const fetchPayment = async (id: unknown) => {
       if (typeof id !== "string" || !/^pay_[A-Za-z0-9]+$/.test(id))
         throw new Error("Invalid gateway payment ID")
-      const payment = await this.api.request<Entity>("payments/" + id)
+      const payment = await this.api.request<Entity>(
+        "payments/" + id,
+        undefined,
+        undefined,
+        "fetch_payment"
+      )
       if (payment.id !== id)
         throw new Error("Gateway payment identity mismatch")
       this.checkPayment(d, payment)
@@ -149,7 +234,10 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     if (callbackId !== undefined && callbackId !== previous?.id)
       return fetchPayment(callbackId)
     const list = await this.api.request<{ items: Entity[] }>(
-      "orders/" + d.order_id + "/payments"
+      "orders/" + d.order_id + "/payments",
+      undefined,
+      undefined,
+      "list_payments"
     )
     const candidates = list.items.filter((p) =>
       ["authorized", "captured"].includes(p.status)
@@ -177,17 +265,25 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
         ? PaymentSessionStatus.AUTHORIZED
         : PaymentSessionStatus.PENDING
   }
-  async initiatePayment(input: InitiatePaymentInput) {
+  private async initiatePaymentImpl(input: InitiatePaymentInput) {
     const amount = minor(input.amount, input.currency_code)
     const session = input.context?.idempotency_key
     if (!session || !/^payses_[A-Za-z0-9]+$/.test(session))
       throw new Error("Native payment session identity required")
-    const order = await this.api.request<Entity>("orders", {
-      amount,
-      currency: "INR",
-      receipt: createHash("sha256").update(session).digest("hex").slice(0, 40),
-      notes: { medusa_payment_session_id: session },
-    })
+    const order = await this.api.request<Entity>(
+      "orders",
+      {
+        amount,
+        currency: "INR",
+        receipt: createHash("sha256")
+          .update(session)
+          .digest("hex")
+          .slice(0, 40),
+        notes: { medusa_payment_session_id: session },
+      },
+      undefined,
+      "create_order"
+    )
     if (
       order.amount !== amount ||
       order.currency !== "INR" ||
@@ -207,7 +303,7 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
       },
     }
   }
-  async updatePayment(input: UpdatePaymentInput) {
+  private async updatePaymentImpl(input: UpdatePaymentInput) {
     const d = this.data(input)
     if (minor(input.amount, input.currency_code) !== d.amount)
       throw new Error("Totals changed; initialize a fresh payment session")
@@ -224,7 +320,7 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
           : PaymentSessionStatus.PENDING,
     }
   }
-  async authorizePayment(input: AuthorizePaymentInput) {
+  private async authorizePaymentImpl(input: AuthorizePaymentInput) {
     const d = this.data(input)
     const p = await this.payment(d)
     // Auto-capture only: do not place an order while funds remain merely authorized.
@@ -236,15 +332,15 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
           : PaymentSessionStatus.PENDING,
     }
   }
-  async getPaymentStatus(input: GetPaymentStatusInput) {
+  private async getPaymentStatusImpl(input: GetPaymentStatusInput) {
     return { status: this.statusOf(await this.payment(this.data(input))) }
   }
-  async retrievePayment(input: RetrievePaymentInput) {
+  private async retrievePaymentImpl(input: RetrievePaymentInput) {
     const d = this.data(input)
     const p = await this.payment(d)
     return { data: { ...d, ...(p ? { payment_id: p.id } : {}) } }
   }
-  async capturePayment(input: CapturePaymentInput) {
+  private async capturePaymentImpl(input: CapturePaymentInput) {
     const d = this.data(input)
     const p = await this.payment(d)
     if (p?.status !== "captured")
@@ -253,7 +349,9 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
       )
     return { data: { ...d, payment_id: p.id } }
   }
-  async refundPayment(input: RefundPaymentInput): Promise<RefundPaymentOutput> {
+  private async refundPaymentImpl(
+    input: RefundPaymentInput
+  ): Promise<RefundPaymentOutput> {
     const d = this.data(input)
     const execute = () => this.refundAtGateway(input)
     const observed = observedRefundExecution.getStore()
@@ -304,7 +402,10 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
       let accepted = 0
       for (let skip = 0; skip < 500; skip += 100) {
         const page = await this.api.request<{ items: Entity[] }>(
-          "payments/" + p.id + "/refunds?count=100&skip=" + skip
+          "payments/" + p.id + "/refunds?count=100&skip=" + skip,
+          undefined,
+          undefined,
+          "list_refunds"
         )
         if (!Array.isArray(page.items))
           throw new Error("Invalid gateway refund listing")
@@ -325,7 +426,12 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
             throw new Error("Gateway refund totals exceed payment")
           if (entry.notes?.medusa_refund_key === idempotency) {
             if (prior) throw new Error("Ambiguous gateway refund operation")
-            prior = await this.api.request<Entity>("refunds/" + entry.id)
+            prior = await this.api.request<Entity>(
+              "refunds/" + entry.id,
+              undefined,
+              undefined,
+              "fetch_refund"
+            )
             if (
               prior.id !== entry.id ||
               prior.notes?.medusa_refund_key !== idempotency ||
@@ -357,7 +463,12 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     // Reserved observed operations acknowledge existing processed funds only.
     // No client-supplied data can turn this path into a gateway POST.
     const refund = external
-      ? await this.api.request<Entity>("refunds/" + external[1])
+      ? await this.api.request<Entity>(
+          "refunds/" + external[1],
+          undefined,
+          undefined,
+          "fetch_refund"
+        )
       : prior ||
         (await this.api.request<Entity>(
           "payments/" + p.id + "/refund",
@@ -369,7 +480,8 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
               medusa_payment_session_id: d.session_id,
             },
           },
-          { "X-Refund-Idempotency": idempotency }
+          { "X-Refund-Idempotency": idempotency },
+          "create_refund"
         ))
     if (
       external &&
@@ -408,7 +520,7 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
       },
     }
   }
-  async cancelPayment(input: CancelPaymentInput) {
+  private async cancelPaymentImpl(input: CancelPaymentInput) {
     const d = this.data(input)
     const p = await this.payment(d)
     if (p && ["authorized", "captured"].includes(p.status))
@@ -417,10 +529,10 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
       )
     return { data: d }
   }
-  async deletePayment(input: DeletePaymentInput) {
+  private async deletePaymentImpl(input: DeletePaymentInput) {
     return this.cancelPayment(input)
   }
-  async getWebhookActionAndData(
+  private async getWebhookActionAndDataImpl(
     payload: ProviderWebhookPayload["payload"]
   ): Promise<WebhookActionResult> {
     if (!this.options.webhook_secret)
@@ -436,7 +548,12 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     const id = event.payload?.payment?.entity?.id
     if (typeof id !== "string" || !/^pay_[A-Za-z0-9]+$/.test(id))
       throw new Error("Missing webhook payment")
-    const p = await this.api.request<Entity>("payments/" + id)
+    const p = await this.api.request<Entity>(
+      "payments/" + id,
+      undefined,
+      undefined,
+      "fetch_payment"
+    )
     if (p.id !== id) throw new Error("Webhook payment identity mismatch")
     if (!p.order_id || !/^order_[A-Za-z0-9]+$/.test(p.order_id))
       throw new Error("Invalid webhook order")

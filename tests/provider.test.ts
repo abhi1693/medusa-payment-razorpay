@@ -118,7 +118,9 @@ describe("native provider lifecycle", () => {
         amount: 12345,
         currency: "INR",
         notes: { medusa_payment_session_id: "payses_123" },
-      })
+      }),
+      undefined,
+      "create_order"
     )
   })
   it("requires native initiation identity", async () =>
@@ -179,7 +181,7 @@ describe("native provider lifecycle", () => {
   it("authorizes only captured funds without another capture POST", async () => {
     expect((await provider.authorizePayment({ data })).status).toBe("captured")
     await provider.capturePayment({ data })
-    expect(request.mock.calls.every((c) => c.length === 1)).toBe(true)
+    expect(request.mock.calls.every((c) => c[1] === undefined)).toBe(true)
   })
   it("waits while automatic capture is pending", async () => {
     request.mockImplementation(async (path: string) =>
@@ -477,7 +479,8 @@ describe("refund execution security boundary", () => {
     expect(request).toHaveBeenCalledWith(
       "payments/pay_123/refund",
       expect.objectContaining({ amount: value.paise, speed: "normal" }),
-      expect.any(Object)
+      expect.any(Object),
+      "create_refund"
     )
   })
 })

@@ -1,3 +1,4 @@
+import { diagnostics, lifecycleLogEvent } from "./diagnostics"
 import { createHash } from "node:crypto"
 import type {
   MedusaContainer,
@@ -50,7 +51,7 @@ function operation(order: string, key: string) {
 }
 // Internal worker API. The caller must authenticate the webhook (or be an
 // authorized operator). Every remote entity is independently fetched/verified.
-export async function importRazorpayRefund(
+async function importRefund(
   scope: MedusaContainer,
   event: { refund_id: string; payment_id: string },
   options: RefundImportOptions
@@ -510,4 +511,30 @@ export async function importRazorpayRefund(
       amount_paise: Number(refund.amount),
     }
   })
+}
+
+export async function importRazorpayRefund(
+  scope: MedusaContainer,
+  event: { refund_id: string; payment_id: string },
+  options: RefundImportOptions
+) {
+  const log = diagnostics(options.logger, options.log_level)
+  log("debug", lifecycleLogEvent, {
+    operation: "import_refund",
+    outcome: "started",
+  })
+  try {
+    const result = await importRefund(scope, event, options)
+    log("info", lifecycleLogEvent, {
+      operation: "import_refund",
+      outcome: "completed",
+    })
+    return result
+  } catch (error) {
+    log("warning", lifecycleLogEvent, {
+      operation: "import_refund",
+      outcome: "rejected",
+    })
+    throw error
+  }
 }
