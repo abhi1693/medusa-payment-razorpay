@@ -100,14 +100,12 @@ export default async function lifecycle({ container }: ExecArgs) {
     })
   }
   try {
-    const region = await container
-      .resolve(Modules.REGION)
-      .createRegions({
-        name: "Isolated INR refund fixture",
-        currency_code: "inr",
-        countries: ["in"],
-        automatic_taxes: false,
-      })
+    const region = await container.resolve(Modules.REGION).createRegions({
+      name: "Isolated INR refund fixture",
+      currency_code: "inr",
+      countries: ["in"],
+      automatic_taxes: false,
+    })
     const channel = await container
       .resolve(Modules.SALES_CHANNEL)
       .createSalesChannels({ name: "Isolated refund channel" })
