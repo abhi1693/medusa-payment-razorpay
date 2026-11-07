@@ -67,6 +67,7 @@ jobs:
       matrix:
         suite:
           [
+            amounts,
             configuration,
             provider,
             http-client,

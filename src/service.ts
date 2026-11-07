@@ -1,4 +1,8 @@
-import { validateRazorpayCredentials, type RazorpayMode } from "./configuration"
+import { inrMajorUnits } from "./amounts"
+import {
+  validateRazorpayCredentials,
+  type RazorpayCredentials,
+} from "./configuration"
 import {
   createLogger,
   validateLogLevel,
@@ -40,11 +44,8 @@ export type RefundExecutionGuard = (
   context: { session_id: string },
   execute: () => Promise<RefundPaymentOutput>
 ) => Promise<RefundPaymentOutput>
-export type Options = {
+export type Options = RazorpayCredentials & {
   log_level?: LogLevel
-  mode: RazorpayMode
-  key_id: string
-  key_secret: string
   webhook_secret?: string
   refund_guard?: RefundExecutionGuard
 }
@@ -147,11 +148,9 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     )
       throw new Error("Razorpay refund guard must be a function")
     if (
-      typeof options.key_secret !== "string" ||
-      !options.key_secret.trim() ||
-      (options.webhook_secret !== undefined &&
-        (typeof options.webhook_secret !== "string" ||
-          !options.webhook_secret.trim()))
+      options.webhook_secret !== undefined &&
+      (typeof options.webhook_secret !== "string" ||
+        !options.webhook_secret.trim())
     )
       throw new Error("Razorpay webhook secret must be configured privately")
     if (options.mode === "live" && !options.webhook_secret)
@@ -221,6 +220,11 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     const list = await this.api.get<{ items: Entity[] }>(
       "orders/" + d.order_id + "/payments"
     )
+    if (
+      !Array.isArray(list.items) ||
+      list.items.some((p) => !p || typeof p !== "object" || Array.isArray(p))
+    )
+      throw new Error("Invalid gateway payment listing")
     const candidates = list.items.filter((p) =>
       ["authorized", "captured"].includes(p.status)
     )
@@ -234,6 +238,8 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
   }
   private checkPayment(d: Data, p: Entity) {
     if (
+      typeof p.id !== "string" ||
+      !/^pay_[A-Za-z0-9]+$/.test(p.id) ||
       p.order_id !== d.order_id ||
       p.amount !== d.amount ||
       p.currency !== d.currency
@@ -243,9 +249,7 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
   private statusOf(p?: Entity) {
     return p?.status === "captured"
       ? PaymentSessionStatus.CAPTURED
-      : p?.status === "authorized"
-        ? PaymentSessionStatus.AUTHORIZED
-        : PaymentSessionStatus.PENDING
+      : PaymentSessionStatus.PENDING
   }
   private async initiatePaymentImpl(input: InitiatePaymentInput) {
     const amount = minor(input.amount, input.currency_code)
@@ -261,6 +265,7 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     if (
       order.amount !== amount ||
       order.currency !== "INR" ||
+      order.notes?.medusa_payment_session_id !== session ||
       !/^order_[A-Za-z0-9]+$/.test(order.id)
     )
       throw new Error("Invalid gateway order response")
@@ -544,7 +549,7 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     if (p.status !== "captured") return { action: "not_supported" }
     return {
       action: "captured",
-      data: { session_id: session, amount: order.amount / 100 },
+      data: { session_id: session, amount: inrMajorUnits(order.amount) },
     }
   }
 }

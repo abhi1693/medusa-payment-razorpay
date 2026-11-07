@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import type { MedusaContainer } from "@medusajs/framework/types"
 import { reconcileRazorpayPayment as reconcile } from "../src/reconciliation"
@@ -213,7 +214,7 @@ it("fails safely when the configured test key has live prefix", async () => {
   )
 })
 it("does not start a gateway read after its report deadline", async () => {
-  vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValue(40000)
+  vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValue(40000)
   await expect(reconcileRazorpayPayment(scope, "pay_native")).rejects.toThrow(
     "timed out"
   )

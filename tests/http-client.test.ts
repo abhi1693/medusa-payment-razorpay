@@ -254,3 +254,44 @@ it("does not intentionally include authentication headers or configured API cred
   const output = JSON.stringify(sink.mock.calls)
   expect(output).not.toMatch(/Authorization|fixture_secret|rzp_test_fixture/)
 })
+
+it.each(["authorization", "AUTHORIZATION", "Authorization"])(
+  "protects authentication against case-insensitive custom %s headers",
+  async (name) => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({}))
+    const client = new RazorpayGateway({
+      ...options,
+      fetch: fetcher,
+      log_level: "none",
+    })
+    await client.post(
+      "payments/pay_fixture/refund",
+      { amount: 100 },
+      {
+        [name]: "injected",
+        "content-type": "text/plain",
+        "X-Refund-Idempotency": "stable_operation",
+      }
+    )
+    const headers = new Headers(fetcher.mock.calls[0][1]?.headers)
+    expect(headers.get("authorization")).toBe(
+      "Basic " +
+        Buffer.from(options.key_id + ":" + options.key_secret).toString(
+          "base64"
+        )
+    )
+    expect(headers.get("content-type")).toBe("application/json")
+    expect(headers.get("X-Refund-Idempotency")).toBe("stable_operation")
+  }
+)
+
+it("accepts a fractional remaining deadline without a pre-HTTP RangeError", async () => {
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response("{}"))
+  const client = new RazorpayGateway({
+    ...options,
+    fetch: fetcher,
+    log_level: "none",
+  })
+  await expect(client.get("payments/pay_fixture", 14999.5)).resolves.toEqual({})
+  expect(fetcher).toHaveBeenCalledTimes(1)
+})

@@ -174,16 +174,15 @@ export class RazorpayGateway implements Gateway {
     let response: Response
     log("debug", "Sending Razorpay API request", { request: body })
     try {
+      const requestHeaders = new Headers(headers)
+      requestHeaders.set("Authorization", this.authorization)
+      requestHeaders.set("Content-Type", "application/json")
       response = await this.transport("https://api.razorpay.com/v1/" + path, {
         method,
-        headers: {
-          ...headers,
-          Authorization: this.authorization,
-          "Content-Type": "application/json",
-        },
+        headers: requestHeaders,
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: AbortSignal.timeout(
-          Math.min(this.timeoutMs, Math.max(1, timeoutMs))
+          Math.ceil(Math.min(this.timeoutMs, Math.max(1, timeoutMs)))
         ),
         redirect: "error",
       })

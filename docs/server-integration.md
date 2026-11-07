@@ -39,7 +39,7 @@ if (refund) {
 ```
 
 `coordinate(sessionIds, work)` is an application-supplied async critical section.
-Use the same session-keyed lock for this observation, `refund_guard`, and your
+Use the same distributed session-and-order financial lock for this observation, `refund_guard`, and your
 order-completion gate. The library does not choose a database, create a ledger,
 change merchant settings or overwrite environment configuration. The observer
 resolves native payment sessions through authenticated gateway order notes,
@@ -139,3 +139,5 @@ Use the same explicit `mode`, key ID and API secret for the payment provider, `g
 Verify payment and refund webhook bytes with the secret belonging to that endpoint and environment. Invalid signatures fail before gateway reads; valid signatures still require authenticated current-state reads and native order/session binding. The webhook payload is not trusted to select an account or switch modes. An inaccessible or mismatched entity throws rather than changing accounting. `signedRefundEvent` validates the supplied endpoint secret; it does not discover the mode or provision a subscriber.
 
 Live provider registration requires a webhook secret, but that does not prove the endpoint is configured, durable or subscribed correctly. Preserve the documented event/lock/recovery wiring in each environment. Never replay test events or delayed jobs into a live worker, and do not reuse test native session/payment records after changing credentials. Official references: [test/live isolation](https://razorpay.com/docs/payments/dashboard/test-live-modes), [API keys](https://razorpay.com/docs/payments/dashboard/account-settings/api-keys), [webhook setup](https://razorpay.com/docs/payments/dashboard/account-settings/webhooks).
+
+Financial coordination must serialize every payment session belonging to the same order, including refund imports, native refund workflows, order credit changes and completion. A session-only lock does not protect shared order accounting. Resolve and lock the associated order as well; acquire multiple locks in a consistent order and keep ownership through the full callback.

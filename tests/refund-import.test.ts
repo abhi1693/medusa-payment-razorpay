@@ -593,3 +593,61 @@ it("preserves the original actor, reason and note on a processed deferred native
     })
   )
 })
+
+it.each([{}, { pending_difference: null }])(
+  "rejects missing native accounting summary %j before writes",
+  async (summary) => {
+    order.summary = summary
+    await expect(importRazorpayRefund(scope, event, options)).rejects.toThrow()
+    expect(payments.refundPayment).not.toHaveBeenCalled()
+    expect(order.transactions).toHaveLength(0)
+    expect(posts).toBe(0)
+  }
+)
+it("rejects duplicated gateway operation hashes before native writes", async () => {
+  const hash = createHash("sha256")
+    .update("order_gateway:original_operation")
+    .digest("hex")
+  refunds[0].notes = {
+    medusa_refund_key: hash,
+    medusa_payment_session_id: "payses_native",
+  }
+  refunds.push({ ...refunds[0], id: "rfnd_duplicate" })
+  gateway.amount_refunded = 2000
+  native.failed_attempts = [
+    {
+      id: "refund_original",
+      idempotency_key: "original_operation",
+      amount: 10,
+      status: "failed",
+      deleted_at: new Date().toISOString(),
+    },
+  ]
+  await expect(importRazorpayRefund(scope, event, options)).rejects.toThrow(
+    "Ambiguous native gateway refund operation"
+  )
+  expect(payments.refundPayment).not.toHaveBeenCalled()
+  expect(posts).toBe(0)
+})
+it("rejects pending gateway state for a successful native refund", async () => {
+  const hash = createHash("sha256")
+    .update("order_gateway:original_operation")
+    .digest("hex")
+  refunds[0].notes = {
+    medusa_refund_key: hash,
+    medusa_payment_session_id: "payses_native",
+  }
+  refunds[0].status = "pending"
+  native.refunds = [
+    {
+      id: "refund_original",
+      idempotency_key: "original_operation",
+      amount: 10,
+      status: "succeeded",
+    },
+  ]
+  await expect(importRazorpayRefund(scope, event, options)).rejects.toThrow(
+    "Accepted native refund is not processed"
+  )
+  expect(posts).toBe(0)
+})

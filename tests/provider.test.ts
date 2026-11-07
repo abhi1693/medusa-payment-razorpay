@@ -210,6 +210,7 @@ describe("native provider lifecycle", () => {
         : { items: [{ ...payment, status: "authorized" }] }
     )
     expect((await provider.authorizePayment({ data })).status).toBe("pending")
+    expect((await provider.getPaymentStatus({ data })).status).toBe("pending")
     await expect(provider.capturePayment({ data })).rejects.toThrow()
   })
   it("returns pending without a successful attempt", async () => {
@@ -313,7 +314,7 @@ describe("signed webhook replay", () => {
     )
     expect(a).toEqual({
       action: "captured",
-      data: { session_id: "payses_123", amount: 123.45 },
+      data: { session_id: "payses_123", amount: "123.45" },
     })
     expect(b).toEqual(a)
   })
@@ -857,5 +858,50 @@ describe("native Admin refund rejection", () => {
     )
     request.mockRejectedValue(failure)
     await expect(provider.refundPayment(input)).rejects.toBe(failure)
+  })
+})
+
+describe("gateway response boundary checks", () => {
+  it("rejects a signature with trailing whitespace", () => {
+    expect(() => verify("raw", sign("raw") + "\n", options.key_secret)).toThrow(
+      "Invalid Razorpay signature"
+    )
+  })
+  it("requires order creation to confirm the native session association", async () => {
+    request.mockResolvedValueOnce({
+      ...order,
+      notes: { medusa_payment_session_id: "payses_other" },
+    })
+    await expect(
+      provider.initiatePayment({
+        amount: 123.45,
+        currency_code: "inr",
+        context: { idempotency_key: "payses_123" },
+      })
+    ).rejects.toThrow("Invalid gateway order response")
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+  it.each([undefined, {}, [null]])(
+    "rejects malformed payment listings %j",
+    async (items) => {
+      const base = request.getMockImplementation()!
+      request.mockImplementation(async (path, ...args) =>
+        path.endsWith("/payments") ? { items } : base(path, ...args)
+      )
+      await expect(provider.authorizePayment({ data })).rejects.toThrow(
+        "Invalid gateway payment listing"
+      )
+    }
+  )
+  it("rejects a successful listed payment with an invalid identity", async () => {
+    const base = request.getMockImplementation()!
+    request.mockImplementation(async (path, ...args) =>
+      path.endsWith("/payments")
+        ? { items: [{ ...payment, id: "../other" }] }
+        : base(path, ...args)
+    )
+    await expect(provider.authorizePayment({ data })).rejects.toThrow(
+      "mismatch"
+    )
   })
 })

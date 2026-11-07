@@ -1,31 +1,23 @@
-import { validateRazorpayCredentials, type RazorpayMode } from "./configuration"
+import { performance } from "node:perf_hooks"
+import { inrMinorUnits as paise } from "./amounts"
+import {
+  validateRazorpayCredentials,
+  type RazorpayCredentials,
+} from "./configuration"
 import { RazorpayGateway, GatewayRequestError } from "./gateway"
 import { createLogger, type LogLevel, type LoggerSink } from "./logger"
 import type {
-  BigNumberInput,
   MedusaContainer,
   IPaymentModuleService,
 } from "@medusajs/framework/types"
-import { BigNumber, MedusaError, Modules } from "@medusajs/framework/utils"
+import { MedusaError, Modules } from "@medusajs/framework/utils"
 import { record, records } from "./records"
-export type ReconciliationOptions = {
+export type ReconciliationOptions = RazorpayCredentials & {
   log_level?: LogLevel
   logger?: LoggerSink
-  mode: RazorpayMode
-  key_id: string
-  key_secret: string
   provider_id?: string
 }
 
-function paise(value: unknown) {
-  const text = new BigNumber(value as BigNumberInput).bigNumber!.toFixed()
-  if (!/^\d+(\.\d{1,2})?$/.test(text)) throw new Error("Invalid INR amount")
-  const [whole, fraction = ""] = text.split(".")
-  const amount = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"))
-  if (amount > BigInt(Number.MAX_SAFE_INTEGER))
-    throw new Error("INR amount exceeds supported range")
-  return Number(amount)
-}
 function minor(value: unknown): number {
   if (!Number.isSafeInteger(value) || Number(value) < 0)
     throw new Error("Invalid gateway INR amount")
@@ -47,10 +39,10 @@ export function gatewayReader(options: ReconciliationOptions): GatewayReader {
     logger: options.logger,
     log_level: options.log_level,
   })
-  const deadline = Date.now() + 30000
+  const deadline = performance.now() + 30000
   // Expose GET only; retain a total deadline across reconciliation reads.
   return async (path: string) => {
-    const remaining = deadline - Date.now()
+    const remaining = deadline - performance.now()
     if (remaining <= 0)
       throw new Error("Gateway reconciliation timed out; no records changed")
     try {
