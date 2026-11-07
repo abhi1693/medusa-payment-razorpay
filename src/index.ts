@@ -31,7 +31,16 @@ export { GatewayRefundPendingError } from "./gateway-refund-pending-error"
 
 export { GatewayRefundReconciliationError } from "./gateway-refund-reconciliation-error"
 
-export { LOG_LEVELS, validateLogLevel } from "./diagnostics"
-export type { LogLevel } from "./diagnostics"
+export { LOG_LEVELS, validateLogLevel } from "./logger"
+export type { LogLevel } from "./logger"
 
 export { RazorpayGateway, GatewayRequestError } from "./gateway"
+
+export { createLogger } from "./logger"
+export type {
+  LoggerSink,
+  PluginLogger,
+  LoggerOptions,
+  LogContext,
+} from "./logger"
+export type { GatewayOptions, HttpMethod, GatewayFailureKind } from "./gateway"

@@ -325,10 +325,10 @@ describe("gateway transport", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(new Response("secret", { status: 500 }))
     await expect(
-      new RazorpayGateway(options.key_id, options.key_secret).request(
-        "orders",
-        {}
-      )
+      new RazorpayGateway({
+        key_id: options.key_id,
+        key_secret: options.key_secret,
+      }).request("orders", {})
     ).rejects.toThrow("reconcile")
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(fetchMock.mock.calls[0][1]).toMatchObject({

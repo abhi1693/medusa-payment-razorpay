@@ -1,4 +1,4 @@
-import { diagnostics, lifecycleLogEvent } from "./diagnostics"
+import { createLogger } from "./logger"
 import { createHash } from "node:crypto"
 import type {
   MedusaContainer,
@@ -44,7 +44,7 @@ function paise(value: unknown) {
     throw new Error("Invalid native refund accounting amount")
   return n.toNumber()
 }
-function operation(order: string, key: string) {
+function refundKeyHash(order: string, key: string) {
   return createHash("sha256")
     .update(order + ":" + key)
     .digest("hex")
@@ -142,7 +142,7 @@ async function importRefund(
     if (nativeKey !== undefined) {
       const matches = attempts.filter(
         (r) =>
-          operation(
+          refundKeyHash(
             String(report.gateway_order_id),
             String(record(r).idempotency_key || r.id)
           ) === nativeKey
@@ -217,7 +217,7 @@ async function importRefund(
           const detail = await get("refunds/" + g.id)
           if (
             record(detail.notes).medusa_refund_key ===
-            operation(String(report.gateway_order_id), k)
+            refundKeyHash(String(report.gateway_order_id), k)
           ) {
             if (
               detail.payment_id !== event.payment_id ||
@@ -518,23 +518,17 @@ export async function importRazorpayRefund(
   event: { refund_id: string; payment_id: string },
   options: RefundImportOptions
 ) {
-  const log = diagnostics(options.logger, options.log_level)
-  log("debug", lifecycleLogEvent, {
-    operation: "import_refund",
-    outcome: "started",
+  const logger = createLogger({
+    sink: options.logger,
+    level: options.log_level,
   })
+  logger.debug("Razorpay refund import started")
   try {
     const result = await importRefund(scope, event, options)
-    log("info", lifecycleLogEvent, {
-      operation: "import_refund",
-      outcome: "completed",
-    })
+    logger.info("Razorpay refund import completed")
     return result
   } catch (error) {
-    log("warning", lifecycleLogEvent, {
-      operation: "import_refund",
-      outcome: "rejected",
-    })
+    logger.warning("Razorpay refund import failed")
     throw error
   }
 }

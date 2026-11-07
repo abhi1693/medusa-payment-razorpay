@@ -1,10 +1,5 @@
 import { RazorpayGateway, GatewayRequestError } from "./gateway"
-import {
-  diagnostics,
-  lifecycleLogEvent,
-  type LogLevel,
-  type DiagnosticLogger,
-} from "./diagnostics"
+import { createLogger, type LogLevel, type LoggerSink } from "./logger"
 import type {
   BigNumberInput,
   MedusaContainer,
@@ -14,7 +9,7 @@ import { BigNumber, MedusaError, Modules } from "@medusajs/framework/utils"
 import { record, records } from "./records"
 export type ReconciliationOptions = {
   log_level?: LogLevel
-  logger?: DiagnosticLogger
+  logger?: LoggerSink
   mode: "test"
   key_id: string
   key_secret: string
@@ -54,12 +49,12 @@ export function gatewayReader(options: ReconciliationOptions) {
       MedusaError.Types.NOT_ALLOWED,
       "Test gateway configuration is required"
     )
-  const client = new RazorpayGateway(
-    key,
-    secret,
-    options.logger,
-    options.log_level
-  )
+  const client = new RazorpayGateway({
+    key_id: key,
+    key_secret: secret,
+    logger: options.logger,
+    log_level: options.log_level,
+  })
   const deadline = Date.now() + 30000
   // Expose GET only; retain a total deadline across reconciliation reads.
   return async (path: string) => {
@@ -69,7 +64,11 @@ export function gatewayReader(options: ReconciliationOptions) {
     try {
       return record(await client.get(path, Math.min(15000, remaining)))
     } catch (error) {
-      if (error instanceof GatewayRequestError && error.status !== undefined)
+      if (
+        error instanceof GatewayRequestError &&
+        error.kind === "http" &&
+        error.status !== undefined
+      )
         throw new Error(
           `Gateway reconciliation unavailable (HTTP ${error.status}); no records changed`
         )
@@ -244,23 +243,19 @@ export async function reconcileRazorpayPayment(
   id: string,
   options: ReconciliationOptions
 ) {
-  const log = diagnostics(options.logger, options.log_level)
-  log("debug", lifecycleLogEvent, {
-    operation: "reconcile_payment",
-    outcome: "started",
+  const logger = createLogger({
+    sink: options.logger,
+    level: options.log_level,
   })
+  logger.debug("Razorpay payment reconciliation started")
   try {
     const result = await reconcilePayment(scope, id, options)
-    log(result.discrepancies.length ? "warning" : "info", lifecycleLogEvent, {
-      operation: "reconcile_payment",
-      outcome: result.discrepancies.length ? "review_required" : "completed",
-    })
+    if (result.discrepancies.length)
+      logger.warning("Razorpay payment reconciliation requires review")
+    else logger.info("Razorpay payment reconciliation completed")
     return result
   } catch (error) {
-    log("warning", lifecycleLogEvent, {
-      operation: "reconcile_payment",
-      outcome: "rejected",
-    })
+    logger.warning("Razorpay payment reconciliation failed")
     throw error
   }
 }

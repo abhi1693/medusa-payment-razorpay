@@ -1,10 +1,10 @@
 import {
-  lifecycleLogEvent,
-  diagnostics,
+  createLogger,
   validateLogLevel,
   type LogLevel,
-  type DiagnosticLogger,
-} from "./diagnostics"
+  type LoggerSink,
+  type PluginLogger,
+} from "./logger"
 import { createHash } from "node:crypto"
 import {
   AbstractPaymentProvider,
@@ -53,36 +53,36 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
   static identifier = "razorpay"
   protected api: Gateway
   private options: Options
-  private log: ReturnType<typeof diagnostics>
-  constructor(container: Record<string, unknown>, options: Options) {
+  private log: PluginLogger
+  constructor(
+    container: Record<string, unknown> & { logger?: LoggerSink },
+    options: Options
+  ) {
     super(container, options)
     RazorpayProvider.validateOptions(options)
     this.options = options
-    this.log = diagnostics(container.logger as any, options.log_level)
-    this.api = new RazorpayGateway(
-      options.key_id,
-      options.key_secret,
-      container.logger as DiagnosticLogger | undefined,
-      options.log_level
-    )
+    this.log = createLogger({
+      sink: container.logger,
+      level: options.log_level,
+    })
+    this.api = new RazorpayGateway({
+      key_id: options.key_id,
+      key_secret: options.key_secret,
+      logger: container.logger,
+      log_level: options.log_level,
+    })
   }
   private async lifecycle<T>(
-    operation: string,
+    action: string,
     execute: () => Promise<T>
   ): Promise<T> {
-    this.log("debug", lifecycleLogEvent, { operation, outcome: "started" })
+    this.log.debug(`Razorpay ${action} started`)
     try {
       const result = await execute()
-      this.log("info", lifecycleLogEvent, {
-        operation,
-        outcome: "completed",
-      })
+      this.log.info(`Razorpay ${action} completed`)
       return result
     } catch (error) {
-      this.log("warning", lifecycleLogEvent, {
-        operation,
-        outcome: "rejected",
-      })
+      this.log.warning(`Razorpay ${action} failed`)
       throw error
     }
   }
