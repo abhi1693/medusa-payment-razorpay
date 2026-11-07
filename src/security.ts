@@ -26,3 +26,18 @@ export function minor(amount: unknown, currency: string): number {
     throw new Error("Invalid INR amount")
   return Number(result)
 }
+
+export function verifyRazorpayCheckout(
+  orderId: string,
+  paymentId: string,
+  signature: unknown,
+  secret: string
+) {
+  if (
+    !/^order_[A-Za-z0-9]+$/.test(orderId) ||
+    !/^pay_[A-Za-z0-9]+$/.test(paymentId) ||
+    !secret
+  )
+    throw new Error("Invalid checkout confirmation identity or configuration")
+  verify(orderId + "|" + paymentId, signature, secret)
+}

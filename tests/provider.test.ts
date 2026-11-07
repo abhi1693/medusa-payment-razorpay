@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 import { createHmac } from "node:crypto"
 import { BigNumber } from "@medusajs/framework/utils"
 import Provider, { type Options } from "../src/service"
-import { minor, verify } from "../src/security"
+import { minor, verify, verifyRazorpayCheckout } from "../src/security"
 import { RazorpayGateway, type Entity, type Gateway } from "../src/gateway"
 const options: Options = {
   mode: "test",
@@ -606,4 +606,29 @@ describe("payment attempt identity and retry safety", () => {
       ).rejects.toThrow("webhook amount")
     }
   )
+})
+
+it("exports reusable checkout signature verification with stored identities", () => {
+  verifyRazorpayCheckout(
+    "order_123",
+    "pay_123",
+    sign("order_123|pay_123"),
+    options.key_secret
+  )
+  expect(() =>
+    verifyRazorpayCheckout(
+      "order_other",
+      "pay_123",
+      sign("order_123|pay_123"),
+      options.key_secret
+    )
+  ).toThrow()
+  for (const [orderId, paymentId, secret] of [
+    ["bad", "pay_123", options.key_secret],
+    ["order_123", "bad", options.key_secret],
+    ["order_123", "pay_123", ""],
+  ])
+    expect(() =>
+      verifyRazorpayCheckout(orderId, paymentId, "bad", secret)
+    ).toThrow()
 })
