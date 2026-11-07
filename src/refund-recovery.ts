@@ -28,7 +28,8 @@ export async function reconcileRazorpayRefund(
     if (!(error instanceof PendingRefundRecoveryError)) throw error
     if (attempt >= 3)
       throw new Error(
-        "Native refund reservation recovery exhausted; financial review required"
+        "Native refund reservation recovery exhausted; financial review required",
+        { cause: error }
       )
     const next = attempt + 1
     await scope.resolve<IEventBusModuleService>(Modules.EVENT_BUS).emit({

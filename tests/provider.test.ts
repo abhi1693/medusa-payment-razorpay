@@ -3,7 +3,7 @@ import { createHash, createHmac } from "node:crypto"
 import { BigNumber } from "@medusajs/framework/utils"
 import Provider, { type Options } from "../src/service"
 import { minor, verify, verifyRazorpayCheckout } from "../src/security"
-import { RazorpayGateway, type Entity, type Gateway } from "../src/gateway"
+import { RazorpayGateway } from "../src/gateway"
 const options: Options = {
   mode: "test",
   key_id: "rzp_test_fixture",
@@ -32,15 +32,30 @@ const payment = {
 }
 const sign = (s: string, secret = options.key_secret) =>
   createHmac("sha256", secret).update(s).digest("hex")
+type GatewayCall = (
+  path: string,
+  body?: unknown,
+  headers?: Record<string, string>
+) => Promise<unknown>
 class TestProvider extends Provider {
-  setGateway(api: Gateway) {
-    this.api = api
+  setGateway(api: {
+    get: (path: string) => Promise<unknown>
+    post: GatewayCall
+  }): void {
+    this.api = {
+      get: async <T>(path: string): Promise<T> => (await api.get(path)) as T,
+      post: async <T>(
+        path: string,
+        body: unknown,
+        headers?: Record<string, string>
+      ): Promise<T> => (await api.post(path, body, headers)) as T,
+    }
   }
 }
 let provider: TestProvider
-let request: ReturnType<typeof vi.fn>
+let request: ReturnType<typeof vi.fn<GatewayCall>>
 beforeEach(() => {
-  request = vi.fn(async (path: string) => {
+  request = vi.fn<GatewayCall>(async (path: string) => {
     if (path === "orders/order_123") return order
     if (path === "orders/order_123/payments") return { items: [payment] }
     if (path === "payments/pay_123") return payment
@@ -240,7 +255,7 @@ describe("native provider lifecycle", () => {
       speed: "normal",
       notes: { medusa_payment_session_id: data.session_id },
     })
-    expect(calls[0][2]["X-Refund-Idempotency"]).toMatch(/^[a-f0-9]{64}$/)
+    expect(calls[0][2]?.["X-Refund-Idempotency"]).toMatch(/^[a-f0-9]{64}$/)
   })
   it("fails closed without a refund operation key", async () =>
     expect(provider.refundPayment({ data, amount: 1 })).rejects.toThrow())

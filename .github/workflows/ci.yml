@@ -1,0 +1,61 @@
+name: Provider checks
+on:
+  pull_request:
+  push:
+    branches: [master, "feat/**"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: provider-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  checks:
+    name: ${{ matrix.check }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        check: ["format:check", lint, typecheck, build]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: docker compose build tools
+      - run: docker compose run --rm tools npm run "${{ matrix.check }}"
+  tests:
+    name: Test (${{ matrix.suite }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          [
+            provider,
+            http-client,
+            logger,
+            reconciliation,
+            refund-observation,
+            refund-import,
+            refund-recovery,
+          ]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: docker compose build tools
+      - run: mkdir -p test-results
+      - name: Run independently selected suite
+        run: >-
+          docker compose run --rm -v "$PWD/test-results:/reports" tools
+          npm test -- "tests/${{ matrix.suite }}.test.ts"
+          --reporter=default --reporter=junit --outputFile=/reports/vitest.xml
+      - name: Upload JUnit results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: test-results-${{ matrix.suite }}
+          path: test-results/vitest.xml
+          if-no-files-found: error

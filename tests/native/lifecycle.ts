@@ -27,7 +27,7 @@ export default async function lifecycle({ container }: ExecArgs) {
   const realFetch = globalThis.fetch
   let order: any
   let payment: any
-  let refunds = new Map<string, any>()
+  const refunds = new Map<string, any>()
   let refundPosts = 0
   let capturePosts = 0
   let loseResponse = false

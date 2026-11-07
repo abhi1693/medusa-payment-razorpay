@@ -36,7 +36,8 @@ function sum(values: number[]) {
     throw new Error("Total exceeds supported range")
   return Number(total)
 }
-export function gatewayReader(options: ReconciliationOptions) {
+export type GatewayReader = (path: string) => Promise<Record<string, unknown>>
+export function gatewayReader(options: ReconciliationOptions): GatewayReader {
   const key = options.key_id,
     secret = options.key_secret
   if (
@@ -70,10 +71,12 @@ export function gatewayReader(options: ReconciliationOptions) {
         error.status !== undefined
       )
         throw new Error(
-          `Gateway reconciliation unavailable (HTTP ${error.status}); no records changed`
+          `Gateway reconciliation unavailable (HTTP ${error.status}); no records changed`,
+          { cause: error }
         )
       throw new Error(
-        "Gateway reconciliation transport unavailable; no records changed"
+        "Gateway reconciliation transport unavailable; no records changed",
+        { cause: error }
       )
     }
   }

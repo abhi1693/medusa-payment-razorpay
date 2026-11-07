@@ -540,7 +540,6 @@ it("defers an in-flight native operation rather than adopting it as an external 
 })
 
 it("restores a failed canonical attempt with its original frozen credit intent", async () => {
-  const original = payments.refundPayment.getMockImplementation()
   payments.refundPayment.mockImplementationOnce(async (input: any) => {
     native.failed_attempts = [
       {
