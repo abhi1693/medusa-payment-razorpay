@@ -632,3 +632,12 @@ it("exports reusable checkout signature verification with stored identities", ()
       verifyRazorpayCheckout(orderId, paymentId, "bad", secret)
     ).toThrow()
 })
+
+it.each(["", "   ", undefined])(
+  "public signature helpers reject missing secret %j",
+  (secret) => {
+    expect(() => verify("raw", "0".repeat(64), secret as any)).toThrow(
+      "not configured"
+    )
+  }
+)

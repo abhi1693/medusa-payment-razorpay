@@ -7,6 +7,8 @@ export function verify(
   signature: unknown,
   secret: string
 ) {
+  if (typeof secret !== "string" || !secret.trim())
+    throw new Error("Razorpay signature secret is not configured")
   if (typeof signature !== "string" || !/^[a-f0-9]{64}$/i.test(signature))
     throw new Error("Invalid Razorpay signature")
   const expected = createHmac("sha256", secret).update(body).digest()
