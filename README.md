@@ -159,7 +159,6 @@ The GitHub workflow runs formatting, lint, typecheck and build as separately vis
 A refund POST rejected with HTTP 400 raises `RazorpayRefundRejectedError`
 (`invalid_data`, code `razorpay_refund_rejected`). Medusa Admin can show its
 actionable message instead of a generic server error. The message asks operators
-to check the account balance, remaining refundable amount and gateway refund
-status before retrying. HTTP 400 alone does not establish insufficient balance.
+to verify the refund status and available balance before retrying. HTTP 400 alone does not establish insufficient balance.
 Transport failures and other uncertain responses retain reconciliation handling;
 the provider never retries a refund automatically.

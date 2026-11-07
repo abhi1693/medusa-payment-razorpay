@@ -835,10 +835,8 @@ describe("native Admin refund rejection", () => {
       code: "razorpay_refund_rejected",
     })
     expect(error).toMatchObject({ type: "invalid_data" })
-    expect((error as Error).message).toContain(
-      "Razorpay rejected this refund request"
-    )
-    expect((error as Error).message).toContain("Confirm the refund status")
+    expect((error as Error).message).toContain("Razorpay rejected the refund")
+    expect((error as Error).message).toContain("verify its status")
     expect((error as Error).message).not.toContain("raw provider details")
     expect(
       request.mock.calls.filter(([path]) => path.endsWith("/refund"))

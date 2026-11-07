@@ -5,7 +5,7 @@ export class RazorpayRefundRejectedError extends MedusaError {
   constructor(cause: Error) {
     super(
       MedusaError.Types.INVALID_DATA,
-      "Razorpay rejected this refund request. Check your Razorpay available balance and the payment’s remaining refundable amount. Confirm the refund status in Razorpay before retrying.",
+      "Razorpay rejected the refund; verify its status and your available balance before retrying.",
       "razorpay_refund_rejected"
     )
     this.cause = cause
