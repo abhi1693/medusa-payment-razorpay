@@ -120,3 +120,9 @@ The image installs the committed lockfile with `npm ci`; the tools container has
 ## License
 
 [MIT](LICENSE) © Abhimanyu Saharan.
+
+### Safe gateway diagnostics
+
+The provider uses Medusa's injected logger (with a console fallback) for structured `razorpay.gateway` records. HTTP failures include the HTTP status, an allowlisted provider error code, a fixed error category, operation name, duration and a locally generated correlation UUID. Transport errors are distinct and include only an allowlisted transport classification. Successful refund responses log acknowledgement only; they do not imply settlement.
+
+Logs exclude gateway/native identifiers, amounts, URLs, credentials, headers, request/response payloads, notes, arbitrary provider descriptions and exception messages. Unknown provider details are classified as unrecognized. Logger failures do not change payment outcomes. An uncertain response never triggers an automatic monetary retry: reconcile gateway state first. The local correlation UUID is not a Razorpay request ID.
