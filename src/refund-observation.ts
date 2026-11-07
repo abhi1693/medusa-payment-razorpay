@@ -89,7 +89,19 @@ export async function observeRazorpayRefund(
   )
   const native = record(record(sessions[0]).payment)
   // Uncaptured automatic refunds and other applications have no native payment.
-  if (!native.id) return { ignored: "No native payment association" }
+  if (!native.id) {
+    // A captured refund can arrive before browser/webhook authorization creates
+    // the native Payment. Keep that owned event retryable instead of losing it.
+    if (
+      record(sessions[0]).id === sessionId &&
+      payment.captured !== false &&
+      ["captured", "refunded"].includes(String(payment.status))
+    )
+      throw new Error(
+        "Native Razorpay payment association is not yet available: " + sessionId
+      )
+    return { ignored: "No native payment association" }
+  }
   return coordinate([sessionId], async () => {
     const report = await reconcile(String(native.id))
     if (

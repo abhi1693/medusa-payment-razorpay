@@ -192,3 +192,43 @@ it("rejects an unconfigured whitespace-only refund webhook secret", () => {
   vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", "   ")
   expect(() => signedRefundEvent(signed(body()))).toThrow("signature")
 })
+
+it.each(["captured", "refunded"])(
+  "retains an owned %s refund event while native payment creation is racing",
+  async (status) => {
+    sessions.mockResolvedValue([{ id: "payses_fixture" }])
+    mocks.get
+      .mockResolvedValueOnce({
+        id: "pay_gateway",
+        order_id: "order_gateway",
+        status,
+        captured: true,
+      })
+      .mockResolvedValueOnce({
+        id: "order_gateway",
+        notes: { medusa_payment_session_id: "payses_fixture" },
+      })
+    await expect(observeRazorpayRefund(scope, event)).rejects.toThrow(
+      "not yet available"
+    )
+    expect(mocks.reconcile).not.toHaveBeenCalled()
+  }
+)
+it("ignores uncaptured auto-refunds without inventing a native payment", async () => {
+  sessions.mockResolvedValue([{ id: "payses_fixture" }])
+  mocks.get
+    .mockResolvedValueOnce({
+      id: "pay_gateway",
+      order_id: "order_gateway",
+      status: "refunded",
+      captured: false,
+    })
+    .mockResolvedValueOnce({
+      id: "order_gateway",
+      notes: { medusa_payment_session_id: "payses_fixture" },
+    })
+  await expect(observeRazorpayRefund(scope, event)).resolves.toEqual({
+    ignored: "No native payment association",
+  })
+  expect(mocks.reconcile).not.toHaveBeenCalled()
+})

@@ -133,3 +133,8 @@ when returned by the gateway. A speed change never means the refund completed,
 never changes native accounting, and never initiates another refund. Existing
 webhook subscriptions need no changes when these events are already enabled.
 Official semantics: https://razorpay.com/docs/webhooks/refunds/.
+
+An owned captured-payment refund that arrives before native Payment creation
+remains retryable, so a browser/webhook association race is not silently ignored.
+Uncaptured automatic refunds and genuinely unassociated gateway orders do not
+create native payments or refunds. Exhausted association retries require review.
