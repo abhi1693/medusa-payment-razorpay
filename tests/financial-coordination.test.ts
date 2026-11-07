@@ -142,3 +142,23 @@ it("releases locks when accounting throws so a later retry can enter", async () 
     coordinate([sessions[1]], async () => "recovered")
   ).resolves.toBe("recovered")
 })
+
+it("snapshots scalar associations even when a resolver reuses mutable objects", async () => {
+  const row = { session_id: sessions[0], order_id: "order_before" }
+  const execute: FinancialCoordinationDependencies["execute"] = async (
+    _keys,
+    work
+  ) => {
+    row.order_id = "order_after"
+    return work()
+  }
+  const coordinate = createRazorpayCoordinator({
+    resolve: async () => [row],
+    execute,
+  })
+  const work = vi.fn()
+  await expect(coordinate([sessions[0]], work)).rejects.toThrow(
+    "association changed"
+  )
+  expect(work).not.toHaveBeenCalled()
+})

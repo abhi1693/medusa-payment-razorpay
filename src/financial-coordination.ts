@@ -16,7 +16,7 @@ export function createRazorpayCoordinator(
   dependencies: FinancialCoordinationDependencies
 ): FinancialCoordinator {
   const associations = async (sessions: string[]) => {
-    const rows = await dependencies.resolve(sessions)
+    const rows = await dependencies.resolve([...sessions])
     if (
       rows.length !== sessions.length ||
       new Set(rows.map((row) => row.session_id)).size !== rows.length ||
@@ -27,7 +27,9 @@ export function createRazorpayCoordinator(
       )
     )
       throw new Error("Incomplete or invalid financial order association")
-    return [...rows].sort((a, b) => a.session_id.localeCompare(b.session_id))
+    return rows
+      .map(({ session_id, order_id }) => ({ session_id, order_id }))
+      .sort((a, b) => a.session_id.localeCompare(b.session_id))
   }
   return async (input, work) => {
     const sessions = [...new Set(input)].sort()
