@@ -117,9 +117,9 @@ it("accepts a new operation without URL parsing or a central list", async () => 
     "secret",
     { debug: sink, info: sink },
     "debug"
-  ).request("future/opaque", undefined, undefined, "future_operation")
+  ).request("future/opaque", undefined, undefined)
   expect(JSON.parse(sink.mock.calls[0][0])).toMatchObject({
-    operation: "future_operation",
+    operation: "http_request",
     method: "GET",
     outcome: "started",
   })
@@ -145,12 +145,11 @@ it("accepts a bounded new provider code without a value list", async () => {
     new RazorpayGateway("key", "secret", { warn: sink }).request(
       "opaque",
       undefined,
-      undefined,
-      "new_phase"
+      undefined
     )
   ).rejects.toThrow()
   expect(JSON.parse(sink.mock.calls[0][0])).toMatchObject({
-    operation: "new_phase",
+    operation: "http_request",
     provider_code: "NEW_UPSTREAM_ERROR",
   })
   expect(JSON.stringify(sink.mock.calls)).not.toContain("private")
@@ -182,7 +181,7 @@ it("preserves injected Medusa debug and error sinks", async () => {
   expect(sink.error).toHaveBeenCalled()
   expect(JSON.parse(sink.error.mock.calls[0][0])).toMatchObject({
     level: "critical",
-    operation: "create_order",
+    operation: "http_request",
     method: "POST",
     http_status: 401,
   })
@@ -229,8 +228,7 @@ it("logs safe request and response projections only at debug", async () => {
             email: "private@example.com",
           },
         },
-        { "X-Refund-Idempotency": "private_key" },
-        "create_refund"
+        { "X-Refund-Idempotency": "private_key" }
       )
     ).rejects.toThrow()
     const logs = sink.mock.calls.map((c) => JSON.parse(c[0]))
@@ -292,7 +290,7 @@ it("drops unsafe response classifications and never echoes a successful refund i
     "secret",
     { debug: sink, info: sink },
     "debug"
-  ).request("opaque", {}, undefined, "create_refund")
+  ).request("opaque", {}, undefined)
   const logs = sink.mock.calls.map((c) => JSON.parse(c[0]))
   expect(logs.find((x) => x.outcome === "response_projection")).toMatchObject({
     response_amount_paise: 100,

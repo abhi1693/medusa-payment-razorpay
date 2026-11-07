@@ -1,5 +1,5 @@
 import {
-  refundRequestProjection,
+  gatewayRequestProjection,
   gatewayResponseProjection,
 } from "./diagnostic-projections"
 import {
@@ -21,12 +21,23 @@ export type Entity = {
   receipt?: string
 }
 export interface Gateway {
-  request<T>(
+  get<T>(path: string, timeoutMs?: number): Promise<T>
+  post<T>(
     path: string,
-    body?: unknown,
-    headers?: Record<string, string>,
-    operation?: string
+    body: unknown,
+    headers?: Record<string, string>
   ): Promise<T>
+}
+export class GatewayRequestError extends Error {
+  constructor(
+    message: string,
+    readonly method: string,
+    readonly outcome: "http_error" | "transport_error" | "invalid_response",
+    readonly status?: number
+  ) {
+    super(message)
+    this.name = "GatewayRequestError"
+  }
 }
 export type GatewayLogger = DiagnosticLogger
 function providerError(value: unknown) {
@@ -52,11 +63,49 @@ export class RazorpayGateway implements Gateway {
     private logger: GatewayLogger = console,
     private logLevel: LogLevel = "info"
   ) {}
-  async request<T>(
+  get<T>(path: string, timeoutMs = 15000): Promise<T> {
+    return this.execute("GET", path, undefined, {}, timeoutMs)
+  }
+  post<T>(
+    path: string,
+    body: unknown,
+    headers: Record<string, string> = {}
+  ): Promise<T> {
+    return this.execute("POST", path, body, headers)
+  }
+  put<T>(
+    path: string,
+    body: unknown,
+    headers: Record<string, string> = {}
+  ): Promise<T> {
+    return this.execute("PUT", path, body, headers)
+  }
+  patch<T>(
+    path: string,
+    body: unknown,
+    headers: Record<string, string> = {}
+  ): Promise<T> {
+    return this.execute("PATCH", path, body, headers)
+  }
+  delete<T>(path: string, headers: Record<string, string> = {}): Promise<T> {
+    return this.execute("DELETE", path, undefined, headers)
+  }
+  /** Compatibility adapter; plugin internals use explicit verbs. */
+  request<T>(
+    path: string,
+    body?: unknown,
+    headers: Record<string, string> = {}
+  ): Promise<T> {
+    return body === undefined
+      ? this.get<T>(path)
+      : this.post<T>(path, body, headers)
+  }
+  private async execute<T>(
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
     path: string,
     body?: unknown,
     headers: Record<string, string> = {},
-    action = "request"
+    timeoutMs = 15000
   ): Promise<T> {
     const correlation = randomUUID()
     const started = Date.now()
@@ -67,21 +116,21 @@ export class RazorpayGateway implements Gateway {
     ) =>
       log(level, gatewayLogEvent, {
         correlation,
-        operation: action,
-        method: body === undefined ? "GET" : "POST",
+        operation: "http_request",
+        method,
         ...fields,
         duration_ms: Math.max(0, Date.now() - started),
       })
     emit("debug", { outcome: "started" })
-    if (action === "create_refund" && body !== undefined)
+    if (body !== undefined)
       emit("debug", {
         outcome: "request_projection",
-        ...refundRequestProjection(body, headers),
+        ...gatewayRequestProjection(body, headers),
       })
     let response: Response
     try {
       response = await fetch("https://api.razorpay.com/v1/" + path, {
-        method: body === undefined ? "GET" : "POST",
+        method,
         headers: {
           Authorization:
             "Basic " +
@@ -90,7 +139,7 @@ export class RazorpayGateway implements Gateway {
           ...headers,
         },
         body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(15000),
+        signal: AbortSignal.timeout(Math.min(15000, Math.max(1, timeoutMs))),
         redirect: "error",
       })
     } catch (error) {
@@ -119,10 +168,12 @@ export class RazorpayGateway implements Gateway {
       emit("error", {
         outcome: "transport_error",
         transport_code: transport,
-        reconciliation_required: true,
+        reconciliation_required: method !== "GET",
       })
-      throw new Error(
-        "Razorpay request unavailable; reconcile gateway state before retrying"
+      throw new GatewayRequestError(
+        "Razorpay request unavailable; reconcile gateway state before retrying",
+        method,
+        "transport_error"
       )
     }
     if (!response.ok) {
@@ -146,12 +197,19 @@ export class RazorpayGateway implements Gateway {
           outcome: "http_error",
           http_status: response.status,
           ...providerError(detail),
-          reconciliation_required: true,
+          reconciliation_required: method !== "GET",
         }
       )
-      throw new Error(
-        "Razorpay request failed; reconcile gateway state before retrying"
+      throw new GatewayRequestError(
+        "Razorpay request failed; reconcile gateway state before retrying",
+        method,
+        "http_error",
+        response.status
       )
+    }
+    if (response.status === 204) {
+      emit("info", { outcome: "response_received", http_status: 204 })
+      return undefined as T
     }
     let result: T
     try {
@@ -160,10 +218,13 @@ export class RazorpayGateway implements Gateway {
       emit("error", {
         outcome: "invalid_response",
         http_status: response.status,
-        reconciliation_required: true,
+        reconciliation_required: method !== "GET",
       })
-      throw new Error(
-        "Razorpay response invalid; reconcile gateway state before retrying"
+      throw new GatewayRequestError(
+        "Razorpay response invalid; reconcile gateway state before retrying",
+        method,
+        "invalid_response",
+        response.status
       )
     }
     emit("debug", {

@@ -166,12 +166,7 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     return d
   }
   private async order(d: Data) {
-    const order = await this.api.request<Entity>(
-      "orders/" + d.order_id,
-      undefined,
-      undefined,
-      "fetch_order"
-    )
+    const order = await this.api.get<Entity>("orders/" + d.order_id)
     if (
       order.id !== d.order_id ||
       order.amount !== d.amount ||
@@ -200,12 +195,7 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     const fetchPayment = async (id: unknown) => {
       if (typeof id !== "string" || !/^pay_[A-Za-z0-9]+$/.test(id))
         throw new Error("Invalid gateway payment ID")
-      const payment = await this.api.request<Entity>(
-        "payments/" + id,
-        undefined,
-        undefined,
-        "fetch_payment"
-      )
+      const payment = await this.api.get<Entity>("payments/" + id)
       if (payment.id !== id)
         throw new Error("Gateway payment identity mismatch")
       this.checkPayment(d, payment)
@@ -223,11 +213,8 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     // but a still-authorized/captured/refunded association is never silently replaced.
     if (callbackId !== undefined && callbackId !== previous?.id)
       return fetchPayment(callbackId)
-    const list = await this.api.request<{ items: Entity[] }>(
-      "orders/" + d.order_id + "/payments",
-      undefined,
-      undefined,
-      "list_payments"
+    const list = await this.api.get<{ items: Entity[] }>(
+      "orders/" + d.order_id + "/payments"
     )
     const candidates = list.items.filter((p) =>
       ["authorized", "captured"].includes(p.status)
@@ -260,20 +247,12 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     const session = input.context?.idempotency_key
     if (!session || !/^payses_[A-Za-z0-9]+$/.test(session))
       throw new Error("Native payment session identity required")
-    const order = await this.api.request<Entity>(
-      "orders",
-      {
-        amount,
-        currency: "INR",
-        receipt: createHash("sha256")
-          .update(session)
-          .digest("hex")
-          .slice(0, 40),
-        notes: { medusa_payment_session_id: session },
-      },
-      undefined,
-      "create_order"
-    )
+    const order = await this.api.post<Entity>("orders", {
+      amount,
+      currency: "INR",
+      receipt: createHash("sha256").update(session).digest("hex").slice(0, 40),
+      notes: { medusa_payment_session_id: session },
+    })
     if (
       order.amount !== amount ||
       order.currency !== "INR" ||
@@ -391,11 +370,8 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
       let finished = false
       let accepted = 0
       for (let skip = 0; skip < 500; skip += 100) {
-        const page = await this.api.request<{ items: Entity[] }>(
-          "payments/" + p.id + "/refunds?count=100&skip=" + skip,
-          undefined,
-          undefined,
-          "list_refunds"
+        const page = await this.api.get<{ items: Entity[] }>(
+          "payments/" + p.id + "/refunds?count=100&skip=" + skip
         )
         if (!Array.isArray(page.items))
           throw new Error("Invalid gateway refund listing")
@@ -416,12 +392,7 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
             throw new Error("Gateway refund totals exceed payment")
           if (entry.notes?.medusa_refund_key === idempotency) {
             if (prior) throw new Error("Ambiguous gateway refund operation")
-            prior = await this.api.request<Entity>(
-              "refunds/" + entry.id,
-              undefined,
-              undefined,
-              "fetch_refund"
-            )
+            prior = await this.api.get<Entity>("refunds/" + entry.id)
             if (
               prior.id !== entry.id ||
               prior.notes?.medusa_refund_key !== idempotency ||
@@ -453,14 +424,9 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     // Reserved observed operations acknowledge existing processed funds only.
     // No client-supplied data can turn this path into a gateway POST.
     const refund = external
-      ? await this.api.request<Entity>(
-          "refunds/" + external[1],
-          undefined,
-          undefined,
-          "fetch_refund"
-        )
+      ? await this.api.get<Entity>("refunds/" + external[1])
       : prior ||
-        (await this.api.request<Entity>(
+        (await this.api.post<Entity>(
           "payments/" + p.id + "/refund",
           {
             amount,
@@ -470,8 +436,7 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
               medusa_payment_session_id: d.session_id,
             },
           },
-          { "X-Refund-Idempotency": idempotency },
-          "create_refund"
+          { "X-Refund-Idempotency": idempotency }
         ))
     if (
       external &&
@@ -538,16 +503,11 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     const id = event.payload?.payment?.entity?.id
     if (typeof id !== "string" || !/^pay_[A-Za-z0-9]+$/.test(id))
       throw new Error("Missing webhook payment")
-    const p = await this.api.request<Entity>(
-      "payments/" + id,
-      undefined,
-      undefined,
-      "fetch_payment"
-    )
+    const p = await this.api.get<Entity>("payments/" + id)
     if (p.id !== id) throw new Error("Webhook payment identity mismatch")
     if (!p.order_id || !/^order_[A-Za-z0-9]+$/.test(p.order_id))
       throw new Error("Invalid webhook order")
-    const order = await this.api.request<Entity>("orders/" + p.order_id)
+    const order = await this.api.get<Entity>("orders/" + p.order_id)
     const session = order.notes?.medusa_payment_session_id
     if (!session || !/^payses_[A-Za-z0-9]+$/.test(session))
       return { action: "not_supported" }

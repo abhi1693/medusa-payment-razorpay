@@ -33,3 +33,5 @@ export { GatewayRefundReconciliationError } from "./gateway-refund-reconciliatio
 
 export { LOG_LEVELS, validateLogLevel } from "./diagnostics"
 export type { LogLevel } from "./diagnostics"
+
+export { RazorpayGateway, GatewayRequestError } from "./gateway"

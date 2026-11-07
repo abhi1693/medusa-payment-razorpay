@@ -7,7 +7,7 @@ function object(value: unknown): Record<string, unknown> {
 function amount(value: unknown) {
   return Number.isSafeInteger(value) && Number(value) >= 0 ? value : undefined
 }
-export function refundRequestProjection(
+export function gatewayRequestProjection(
   body: unknown,
   headers: Record<string, string>
 ) {

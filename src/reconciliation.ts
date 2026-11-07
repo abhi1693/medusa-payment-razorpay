@@ -1,6 +1,6 @@
+import { RazorpayGateway, GatewayRequestError } from "./gateway"
 import {
   diagnostics,
-  gatewayLogEvent,
   lifecycleLogEvent,
   type LogLevel,
   type DiagnosticLogger,
@@ -54,57 +54,29 @@ export function gatewayReader(options: ReconciliationOptions) {
       MedusaError.Types.NOT_ALLOWED,
       "Test gateway configuration is required"
     )
-  const log = diagnostics(options.logger, options.log_level)
+  const client = new RazorpayGateway(
+    key,
+    secret,
+    options.logger,
+    options.log_level
+  )
   const deadline = Date.now() + 30000
+  // Expose GET only; retain a total deadline across reconciliation reads.
   return async (path: string) => {
     const remaining = deadline - Date.now()
     if (remaining <= 0)
       throw new Error("Gateway reconciliation timed out; no records changed")
-    log("debug", gatewayLogEvent, {
-      operation: "reconciliation_read",
-      method: "GET",
-      outcome: "started",
-    })
-    let response: Response
     try {
-      response = await fetch("https://api.razorpay.com/v1/" + path, {
-        method: "GET",
-        headers: {
-          Authorization:
-            "Basic " + Buffer.from(key + ":" + secret).toString("base64"),
-        },
-        signal: AbortSignal.timeout(Math.min(15000, remaining)),
-        redirect: "error",
-      })
-    } catch {
-      log("error", gatewayLogEvent, {
-        operation: "reconciliation_read",
-        method: "GET",
-        outcome: "transport_error",
-        reconciliation_required: true,
-      })
+      return record(await client.get(path, Math.min(15000, remaining)))
+    } catch (error) {
+      if (error instanceof GatewayRequestError && error.status !== undefined)
+        throw new Error(
+          `Gateway reconciliation unavailable (HTTP ${error.status}); no records changed`
+        )
       throw new Error(
         "Gateway reconciliation transport unavailable; no records changed"
       )
     }
-    if (!response.ok) {
-      log("warning", gatewayLogEvent, {
-        operation: "reconciliation_read",
-        method: "GET",
-        outcome: "http_error",
-        http_status: response.status,
-      })
-      throw new Error(
-        `Gateway reconciliation unavailable (HTTP ${response.status}); no records changed`
-      )
-    }
-    log("debug", gatewayLogEvent, {
-      operation: "reconciliation_read",
-      method: "GET",
-      outcome: "response_received",
-      http_status: response.status,
-    })
-    return record(await response.json())
   }
 }
 // Report only: never update financial records, retry a refund or issue a gateway POST.

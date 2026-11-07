@@ -57,7 +57,13 @@ beforeEach(() => {
     throw new Error("Unexpected request " + path)
   })
   provider = new TestProvider({}, options)
-  provider.setGateway({ request: request as Gateway["request"] })
+  provider.setGateway({
+    get: (path) => request(path),
+    post: (path, body, headers) =>
+      headers === undefined
+        ? request(path, body)
+        : request(path, body, headers),
+  })
 })
 describe("INR amount and signatures", () => {
   it.each([
@@ -118,9 +124,7 @@ describe("native provider lifecycle", () => {
         amount: 12345,
         currency: "INR",
         notes: { medusa_payment_session_id: "payses_123" },
-      }),
-      undefined,
-      "create_order"
+      })
     )
   })
   it("requires native initiation identity", async () =>
@@ -362,7 +366,13 @@ describe("refund execution security boundary", () => {
         },
       }
     )
-    guarded.setGateway({ request: request as Gateway["request"] })
+    guarded.setGateway({
+      get: (path) => request(path),
+      post: (path, body, headers) =>
+        headers === undefined
+          ? request(path, body)
+          : request(path, body, headers),
+    })
     const operation = guarded.refundPayment(input)
     await entered
     expect(request).not.toHaveBeenCalled()
@@ -387,7 +397,13 @@ describe("refund execution security boundary", () => {
         },
       }
     )
-    guarded.setGateway({ request: request as Gateway["request"] })
+    guarded.setGateway({
+      get: (path) => request(path),
+      post: (path, body, headers) =>
+        headers === undefined
+          ? request(path, body)
+          : request(path, body, headers),
+    })
     await expect(guarded.refundPayment(input)).rejects.toThrow(
       "coordination unavailable"
     )
@@ -415,7 +431,13 @@ describe("refund execution security boundary", () => {
         },
       }
     )
-    guarded.setGateway({ request: request as Gateway["request"] })
+    guarded.setGateway({
+      get: (path) => request(path),
+      post: (path, body, headers) =>
+        headers === undefined
+          ? request(path, body)
+          : request(path, body, headers),
+    })
     await expect(guarded.refundPayment(input)).rejects.toThrow(
       "uncertain gateway response"
     )
@@ -479,8 +501,7 @@ describe("refund execution security boundary", () => {
     expect(request).toHaveBeenCalledWith(
       "payments/pay_123/refund",
       expect.objectContaining({ amount: value.paise, speed: "normal" }),
-      expect.any(Object),
-      "create_refund"
+      expect.any(Object)
     )
   })
 })
