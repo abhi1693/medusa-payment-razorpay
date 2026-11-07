@@ -46,7 +46,7 @@
   "author": "Abhimanyu Saharan",
   "repository": {
     "type": "git",
-    "url": "https://github.com/abhi1693/medusa-payment-razorpay.git"
+    "url": "git+https://github.com/abhi1693/medusa-payment-razorpay.git"
   },
   "homepage": "https://github.com/abhi1693/medusa-payment-razorpay#readme",
   "bugs": {
@@ -61,9 +61,16 @@
     "payments",
     "inr",
     "refunds",
-    "webhooks"
+    "webhooks",
+    "medusa-plugin",
+    "ecommerce",
+    "typescript"
   ],
   "publishConfig": {
     "access": "public"
+  },
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/abhi1693"
   }
 }
