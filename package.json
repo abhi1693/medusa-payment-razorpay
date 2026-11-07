@@ -1,12 +1,12 @@
 {
   "name": "@abhi1693/medusa-payment-razorpay",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.0.1",
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
     "dist",
+    "docs",
     "LICENSE",
     "README.md"
   ],
@@ -19,7 +19,8 @@
     "prepare": "npm run build",
     "prepack": "npm run build",
     "lint": "eslint src tests --max-warnings=0",
-    "test:ci": "vitest run --reporter=default --reporter=junit --outputFile=test-results/vitest.xml"
+    "test:ci": "vitest run --reporter=default --reporter=junit --outputFile=test-results/vitest.xml",
+    "package:check": "npm run build && node scripts/check-package.mjs"
   },
   "peerDependencies": {
     "@medusajs/framework": "2.22.2 || 2.22.4"
@@ -40,5 +41,29 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
+  },
+  "description": "Razorpay payment provider for Medusa v2 with INR test/live checkout, refunds, signed webhooks and reconciliation helpers.",
+  "author": "Abhimanyu Saharan",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/abhi1693/medusa-payment-razorpay.git"
+  },
+  "homepage": "https://github.com/abhi1693/medusa-payment-razorpay#readme",
+  "bugs": {
+    "url": "https://github.com/abhi1693/medusa-payment-razorpay/issues"
+  },
+  "keywords": [
+    "medusa",
+    "medusajs",
+    "medusa-v2",
+    "razorpay",
+    "payment-provider",
+    "payments",
+    "inr",
+    "refunds",
+    "webhooks"
+  ],
+  "publishConfig": {
+    "access": "public"
   }
 }

@@ -1,3 +1,7 @@
+import {
+  validateRazorpayCredentials,
+  type RazorpayCredentials,
+} from "./configuration"
 import { randomUUID } from "node:crypto"
 import {
   createLogger,
@@ -28,9 +32,7 @@ export interface Gateway {
     headers?: Record<string, string>
   ): Promise<T>
 }
-export interface GatewayOptions {
-  key_id: string
-  key_secret: string
+export interface GatewayOptions extends RazorpayCredentials {
   logger?: LoggerSink
   log_level?: LogLevel
   fetch?: typeof fetch
@@ -53,13 +55,7 @@ export class RazorpayGateway implements Gateway {
   private readonly transport: typeof fetch
   private readonly timeoutMs: number
   constructor(options: GatewayOptions) {
-    if (
-      typeof options.key_id !== "string" ||
-      !options.key_id ||
-      typeof options.key_secret !== "string" ||
-      !options.key_secret
-    )
-      throw new Error("Razorpay API credentials are required")
+    validateRazorpayCredentials(options)
     this.timeoutMs = options.timeout_ms ?? 15000
     if (
       !Number.isSafeInteger(this.timeoutMs) ||
@@ -142,60 +138,22 @@ export class RazorpayGateway implements Gateway {
         ...data,
         duration_ms: Math.max(0, Date.now() - started),
       })
-    log("debug", "Sending Razorpay API request", { request: body })
-    try {
-      const response = await this.transport(
-        "https://api.razorpay.com/v1/" + path,
-        {
+    const requestFailure = (
+      kind: GatewayFailureKind,
+      existing?: GatewayRequestError
+    ): GatewayRequestError => {
+      const failure =
+        existing ??
+        new GatewayRequestError(
+          kind === "http"
+            ? "Razorpay request failed; reconcile gateway state before retrying"
+            : kind === "response"
+              ? "Razorpay response invalid; reconcile gateway state before retrying"
+              : "Razorpay request unavailable; reconcile gateway state before retrying",
           method,
-          headers: {
-            ...headers,
-            Authorization: this.authorization,
-            "Content-Type": "application/json",
-          },
-          body: body === undefined ? undefined : JSON.stringify(body),
-          signal: AbortSignal.timeout(
-            Math.min(this.timeoutMs, Math.max(1, timeoutMs))
-          ),
-          redirect: "error",
-        }
-      )
-      status = response.status
-      rawResponse = await response.text()
-      payload = status === 204 ? undefined : JSON.parse(rawResponse)
-      if (!response.ok)
-        throw new GatewayRequestError(
-          "Razorpay request failed; reconcile gateway state before retrying",
-          method,
-          "http",
+          kind,
           status
         )
-      log(
-        method === "GET" ? "debug" : "info",
-        "Razorpay API request completed",
-        { http_status: status }
-      )
-      return payload as T
-    } catch (error) {
-      const kind: GatewayFailureKind =
-        status !== undefined && status >= 400
-          ? "http"
-          : error instanceof SyntaxError
-            ? "response"
-            : "transport"
-      const failure =
-        error instanceof GatewayRequestError
-          ? error
-          : new GatewayRequestError(
-              kind === "http"
-                ? "Razorpay request failed; reconcile gateway state before retrying"
-                : kind === "response"
-                  ? "Razorpay response invalid; reconcile gateway state before retrying"
-                  : "Razorpay request unavailable; reconcile gateway state before retrying",
-              method,
-              kind,
-              status
-            )
       const severity: ActiveLogLevel =
         status === 401 || status === 403
           ? "critical"
@@ -211,7 +169,37 @@ export class RazorpayGateway implements Gateway {
         http_status: status,
         reconciliation_required: method !== "GET",
       })
-      throw failure
+      return failure
+    }
+    let response: Response
+    log("debug", "Sending Razorpay API request", { request: body })
+    try {
+      const requestHeaders = new Headers(headers)
+      requestHeaders.set("Authorization", this.authorization)
+      requestHeaders.set("Content-Type", "application/json")
+      response = await this.transport("https://api.razorpay.com/v1/" + path, {
+        method,
+        headers: requestHeaders,
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: AbortSignal.timeout(
+          Math.ceil(Math.min(this.timeoutMs, Math.max(1, timeoutMs)))
+        ),
+        redirect: "error",
+      })
+      status = response.status
+      rawResponse = await response.text()
+      payload = status === 204 ? undefined : JSON.parse(rawResponse)
+    } catch (error) {
+      const kind: GatewayFailureKind =
+        status !== undefined && status >= 400
+          ? "http"
+          : error instanceof SyntaxError
+            ? "response"
+            : "transport"
+      throw requestFailure(
+        kind,
+        error instanceof GatewayRequestError ? error : undefined
+      )
     } finally {
       if (status !== undefined)
         log("debug", "Received Razorpay API response", {
@@ -219,5 +207,10 @@ export class RazorpayGateway implements Gateway {
           response: payload === undefined ? rawResponse : payload,
         })
     }
+    if (!response.ok) throw requestFailure("http")
+    log(method === "GET" ? "debug" : "info", "Razorpay API request completed", {
+      http_status: status,
+    })
+    return payload as T
   }
 }

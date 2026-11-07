@@ -1,4 +1,13 @@
 import {
+  acknowledgeProcessedRefund,
+  refundAcknowledgementReader,
+} from "./refund-acknowledgement"
+import { inrMajorUnits } from "./amounts"
+import {
+  validateRazorpayCredentials,
+  type RazorpayCredentials,
+} from "./configuration"
+import {
   createLogger,
   validateLogLevel,
   type LogLevel,
@@ -39,11 +48,8 @@ export type RefundExecutionGuard = (
   context: { session_id: string },
   execute: () => Promise<RefundPaymentOutput>
 ) => Promise<RefundPaymentOutput>
-export type Options = {
+export type Options = RazorpayCredentials & {
   log_level?: LogLevel
-  mode: "test"
-  key_id: string
-  key_secret: string
   webhook_secret?: string
   refund_guard?: RefundExecutionGuard
 }
@@ -72,6 +78,7 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
       level: options.log_level,
     })
     this.api = new RazorpayGateway({
+      mode: options.mode,
       key_id: options.key_id,
       key_secret: options.key_secret,
       logger: container.logger,
@@ -138,25 +145,20 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
   }
   static validateOptions(options: Record<string, unknown>) {
     validateLogLevel(options.log_level)
-    if (
-      options.mode !== "test" ||
-      typeof options.key_id !== "string" ||
-      !/^rzp_test_[A-Za-z0-9]+$/.test(options.key_id)
-    )
-      throw new Error("Razorpay requires test mode and a test key")
+    validateRazorpayCredentials(options)
     if (
       options.refund_guard !== undefined &&
       typeof options.refund_guard !== "function"
     )
       throw new Error("Razorpay refund guard must be a function")
     if (
-      typeof options.key_secret !== "string" ||
-      !options.key_secret.trim() ||
-      (options.webhook_secret !== undefined &&
-        (typeof options.webhook_secret !== "string" ||
-          !options.webhook_secret.trim()))
+      options.webhook_secret !== undefined &&
+      (typeof options.webhook_secret !== "string" ||
+        !options.webhook_secret.trim())
     )
-      throw new Error("Razorpay test secrets must be configured privately")
+      throw new Error("Razorpay webhook secret must be configured privately")
+    if (options.mode === "live" && !options.webhook_secret)
+      throw new Error("Razorpay live mode requires a webhook secret")
   }
   private data(input: { data?: Record<string, unknown> }): Data {
     const d = input.data as Data | undefined
@@ -222,6 +224,11 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     const list = await this.api.get<{ items: Entity[] }>(
       "orders/" + d.order_id + "/payments"
     )
+    if (
+      !Array.isArray(list.items) ||
+      list.items.some((p) => !p || typeof p !== "object" || Array.isArray(p))
+    )
+      throw new Error("Invalid gateway payment listing")
     const candidates = list.items.filter((p) =>
       ["authorized", "captured"].includes(p.status)
     )
@@ -235,6 +242,8 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
   }
   private checkPayment(d: Data, p: Entity) {
     if (
+      typeof p.id !== "string" ||
+      !/^pay_[A-Za-z0-9]+$/.test(p.id) ||
       p.order_id !== d.order_id ||
       p.amount !== d.amount ||
       p.currency !== d.currency
@@ -244,9 +253,7 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
   private statusOf(p?: Entity) {
     return p?.status === "captured"
       ? PaymentSessionStatus.CAPTURED
-      : p?.status === "authorized"
-        ? PaymentSessionStatus.AUTHORIZED
-        : PaymentSessionStatus.PENDING
+      : PaymentSessionStatus.PENDING
   }
   private async initiatePaymentImpl(input: InitiatePaymentInput) {
     const amount = minor(input.amount, input.currency_code)
@@ -262,6 +269,7 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     if (
       order.amount !== amount ||
       order.currency !== "INR" ||
+      order.notes?.medusa_payment_session_id !== session ||
       !/^order_[A-Za-z0-9]+$/.test(order.id)
     )
       throw new Error("Invalid gateway order response")
@@ -440,10 +448,20 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
       if (!prior && amount > d.amount - accepted)
         throw new Error("Refund exceeds remaining gateway balance")
     }
-    // Reserved observed operations acknowledge existing processed funds only.
-    // No client-supplied data can turn this path into a gateway POST.
+    // The canonical importer receives a read capability only. A missing or
+    // changed refund cannot fall through to the ordinary monetary POST path.
     const refund = external
-      ? await this.api.get<Entity>("refunds/" + external[1])
+      ? await acknowledgeProcessedRefund(
+          refundAcknowledgementReader(this.api),
+          {
+            refund_id: external[1],
+            payment_id: p.id,
+            amount,
+            currency: d.currency,
+            session_id: d.session_id,
+            operation_hash: importing?.origin_hash,
+          }
+        )
       : prior ||
         (await this.api.post<Entity>(
           "payments/" + p.id + "/refund",
@@ -457,17 +475,6 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
           },
           { "X-Refund-Idempotency": idempotency }
         ))
-    if (
-      external &&
-      (refund.id !== external[1] ||
-        refund.status !== "processed" ||
-        refund.notes?.medusa_refund_key !== importing?.origin_hash ||
-        (importing?.origin_hash !== undefined &&
-          refund.notes?.medusa_payment_session_id !== d.session_id))
-    )
-      throw new Error(
-        "Observed refund must be processed and external to native refund execution"
-      )
     if (
       !/^rfnd_[A-Za-z0-9]+$/.test(refund.id) ||
       refund.payment_id !== p.id ||
@@ -545,7 +552,7 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     if (p.status !== "captured") return { action: "not_supported" }
     return {
       action: "captured",
-      data: { session_id: session, amount: order.amount / 100 },
+      data: { session_id: session, amount: inrMajorUnits(order.amount) },
     }
   }
 }

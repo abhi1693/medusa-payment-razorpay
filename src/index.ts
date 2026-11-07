@@ -48,3 +48,31 @@ export type { GatewayOptions, HttpMethod, GatewayFailureKind } from "./gateway"
 export type { GatewayReader } from "./reconciliation"
 
 export { RazorpayRefundRejectedError } from "./razorpay-refund-rejected-error"
+
+export { validateRazorpayCredentials } from "./configuration"
+export type { RazorpayMode, RazorpayCredentials } from "./configuration"
+
+export { createRazorpayCoordinator } from "./financial-coordination"
+export type {
+  FinancialCoordinator,
+  FinancialCoordinationDependencies,
+  SessionOrderAssociation,
+} from "./financial-coordination"
+
+export {
+  assessRazorpayRefundRecovery,
+  recoverRazorpayRefund,
+} from "./operator-recovery"
+export type {
+  RefundRecoveryTarget,
+  RefundRecoveryAssessment,
+  RefundRecoveryControl,
+} from "./operator-recovery"
+
+export { OperatorRefundRecoveryRequiredError } from "./operator-recovery-required-error"
+
+export { createRazorpayRecoveryOptions } from "./operator-configuration"
+export type {
+  RefundRecoveryConfiguration,
+  RefundRecoveryConfigurationFactory,
+} from "./operator-configuration"

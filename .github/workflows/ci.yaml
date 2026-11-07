@@ -1,9 +1,9 @@
-name: Provider checks
+name: CI
 on:
   pull_request:
   push:
-    branches: [master, "feat/**"]
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 concurrency:
@@ -17,13 +17,47 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        check: ["format:check", lint, typecheck, build]
+        check: ["format:check", "package:check"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Exercise release npm client setup
+        if: matrix.check == 'package:check'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24.21.0"
+          registry-url: https://registry.npmjs.org
+      - name: Verify release client versions and registry
+        if: matrix.check == 'package:check'
+        run: |
+          node --version
+          npm --version
+          registry=$(npm config get registry)
+          test "${registry%/}" = "https://registry.npmjs.org"
       - run: docker compose build tools
       - run: docker compose run --rm tools npm run "${{ matrix.check }}"
+  node-checks:
+    name: ${{ matrix.check }}
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [lint, typecheck, build]
+    uses: abhi1693/actions/.github/workflows/node-ci.yml@4bc25a3100cbfbece517ddad161d59d13c029675 # v1.0.5
+    with:
+      node-version: "24.21.0"
+      checks: ${{ format('["{0}"]', matrix.check) }}
+      scripts: '{"lint":"lint","typecheck":"typecheck","build":"build"}'
+      ignore-scripts: true
+      enable-cache: false
+  security:
+    uses: abhi1693/actions/.github/workflows/security.yml@4bc25a3100cbfbece517ddad161d59d13c029675 # v1.0.5
+    with:
+      secret-scan: true
+      workflow-lint: true
+      npm-audit: true
+      npm-directory: .
+      artifact-prefix: razorpay-security
   tests:
     name: Test (${{ matrix.suite }})
     runs-on: ubuntu-latest
@@ -33,6 +67,11 @@ jobs:
       matrix:
         suite:
           [
+            amounts,
+            operator-command,
+            financial-coordination,
+            refund-acknowledgement,
+            configuration,
             provider,
             http-client,
             logger,

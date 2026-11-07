@@ -1,3 +1,7 @@
+import { operatorRecoveryExecution } from "./operator-recovery-context"
+import { OperatorRefundRecoveryRequiredError } from "./operator-recovery-required-error"
+import type { FinancialCoordinator } from "./financial-coordination"
+import { inrMinorUnits, inrMajorUnits as major } from "./amounts"
 import { createLogger } from "./logger"
 import { createHash } from "node:crypto"
 import type {
@@ -9,7 +13,6 @@ import type {
 import {
   Modules,
   ContainerRegistrationKeys,
-  BigNumber,
   OrderChangeType,
   ChangeActionType,
   PaymentEvents,
@@ -21,29 +24,17 @@ import {
   reconcileRazorpayPayment,
   type ReconciliationOptions,
 } from "./reconciliation"
-import { record } from "./records"
+import { record, records } from "./records"
 import { PendingRefundRecoveryError } from "./refund-recovery-error"
 import { observedRefundExecution } from "./refund-import-context"
 
 export type RefundImportOptions = ReconciliationOptions & {
-  coordinate: <T>(sessions: string[], work: () => Promise<T>) => Promise<T>
+  coordinate: FinancialCoordinator
 }
 const reference = "razorpay_refund"
 // Public FindConfig ORM options force current relations after another worker commits.
 const fresh = { options: { refresh: true } }
-function major(n: number) {
-  const negative = n < 0
-  const a = BigInt(Math.abs(n))
-  return (
-    (negative ? "-" : "") + a / 100n + "." + String(a % 100n).padStart(2, "0")
-  )
-}
-function paise(value: unknown) {
-  const n = new BigNumber(value as string).bigNumber!.multipliedBy(100)
-  if (!n.isInteger() || !n.isFinite() || n.abs().gt(Number.MAX_SAFE_INTEGER))
-    throw new Error("Invalid native refund accounting amount")
-  return n.toNumber()
-}
+const paise = (value: unknown) => inrMinorUnits(value, { allowNegative: true })
 function refundKeyHash(order: string, key: string) {
   return createHash("sha256")
     .update(order + ":" + key)
@@ -114,6 +105,34 @@ async function importRefund(
       listed.status !== refund.status
     )
       throw new Error("Gateway refund changed during import; retry observation")
+    // Index each independently verified gateway detail once per import. This
+    // avoids repeated network reads for every existing native refund and rejects
+    // duplicate operation hashes rather than silently adopting one.
+    let operations: Map<string, Record<string, unknown>[]> | undefined
+    const refundsForOperation = async (hash: string) => {
+      if (!operations) {
+        const index = new Map<string, Record<string, unknown>[]>()
+        for (const listed of report.gateway_refunds) {
+          const detail =
+            listed.id === refund.id ? refund : await get("refunds/" + listed.id)
+          if (
+            detail.id !== listed.id ||
+            detail.payment_id !== event.payment_id ||
+            detail.currency !== "INR" ||
+            detail.amount !== listed.amount_paise ||
+            detail.status !== listed.status
+          )
+            throw new Error(
+              "Gateway refund detail changed during import; retry observation"
+            )
+          const operation = record(detail.notes).medusa_refund_key
+          if (typeof operation === "string")
+            index.set(operation, [...(index.get(operation) || []), detail])
+        }
+        operations = index
+      }
+      return operations.get(hash) || []
+    }
     const native = await payments.retrievePayment(nativeId, {
       ...fresh,
       relations: ["refunds"],
@@ -140,6 +159,11 @@ async function importRefund(
       refund_reason_id?: string
     } = {}
     if (nativeKey !== undefined) {
+      if (
+        typeof nativeKey !== "string" ||
+        (await refundsForOperation(nativeKey)).length !== 1
+      )
+        throw new Error("Ambiguous native gateway refund operation")
       const matches = attempts.filter(
         (r) =>
           refundKeyHash(
@@ -157,9 +181,9 @@ async function importRefund(
         )
       const match = matches[0]
       if (record(match).status === "succeeded") {
-        if (refund.status === "failed")
+        if (refund.status !== "processed")
           throw new Error(
-            "Accepted native refund failed at gateway; accounting review required"
+            "Accepted native refund is not processed at gateway; accounting review required"
           )
         return {
           status: "native",
@@ -168,7 +192,7 @@ async function importRefund(
         }
       }
       if (record(match).status === "pending")
-        throw new PendingRefundRecoveryError()
+        throw new OperatorRefundRecoveryRequiredError()
       if (record(match).status !== "failed" || !record(match).deleted_at)
         throw new Error("Native refund attempt is not safely recoverable")
       // The failed native attempt remains an audit record. A processed gateway
@@ -195,6 +219,13 @@ async function importRefund(
       )
     const key = "razorpay-observed:" + event.refund_id
     let existing = attempts.find((r) => record(r).idempotency_key === key)
+    const resumingExisting = !!existing
+    const control = operatorRecoveryExecution.getStore()
+    const controlled =
+      control?.session_id === session &&
+      control.gateway_refund_id === event.refund_id
+    if (existing && record(existing).status !== "succeeded" && !controlled)
+      throw new OperatorRefundRecoveryRequiredError()
     // All existing refunds must have individual verified associations, not just
     // matching totals. No amount-based adoption or historical fallback.
     for (const r of refunds) {
@@ -212,27 +243,20 @@ async function importRefund(
         )
           throw new Error("Imported native refund association mismatch")
       } else {
-        let found = false
-        for (const g of report.gateway_refunds) {
-          const detail = await get("refunds/" + g.id)
-          if (
-            record(detail.notes).medusa_refund_key ===
-            refundKeyHash(String(report.gateway_order_id), k)
-          ) {
-            if (
-              detail.payment_id !== event.payment_id ||
-              detail.amount !== paise(r.amount) ||
-              detail.currency !== "INR" ||
-              detail.status === "failed"
-            )
-              throw new Error("Native gateway refund association mismatch")
-            found = true
-          }
-        }
-        if (!found)
+        const matches = await refundsForOperation(
+          refundKeyHash(String(report.gateway_order_id), k)
+        )
+        if (!matches.length)
           throw new Error(
             "Native refund lacks a verified gateway operation association"
           )
+        if (
+          matches.length !== 1 ||
+          matches[0].amount !== paise(r.amount) ||
+          matches[0].status !== "processed" ||
+          record(matches[0].notes).medusa_payment_session_id !== session
+        )
+          throw new Error("Native gateway refund association mismatch")
       }
     }
     const orders = scope.resolve<IOrderModuleService>(Modules.ORDER)
@@ -269,11 +293,12 @@ async function importRefund(
     const order = await readOrder()
     if (order.currency_code !== "inr")
       throw new Error("Order cannot accept refund import")
-    const pending = paise(
-      record(order.summary).raw_pending_difference ??
-        record(order.summary).pending_difference ??
-        0
-    )
+    const summary = record(order.summary)
+    const pendingValue =
+      summary.raw_pending_difference ?? summary.pending_difference
+    if (pendingValue === undefined || pendingValue === null)
+      throw new Error("Native order accounting summary is incomplete")
+    const pending = paise(pendingValue)
     if (!existing && pending > 0)
       throw new Error("Native refund accounting is incomplete; retry import")
     for (const r of refunds) {
@@ -371,7 +396,25 @@ async function importRefund(
       intent.amount_paise !== refund.amount
     )
       throw new Error("Native refund import intent mismatch")
-    // Each stage is recoverable through an immutable unique native reference.
+    if (resumingExisting && !controlled) {
+      const priorTransactions = await orders.listOrderTransactions({
+        order_id: orderId,
+        reference: "refund",
+        reference_id: existing.id,
+      })
+      const priorCredits = records(order.credit_lines).filter(
+        (line) =>
+          line.reference === reference && line.reference_id === existing.id
+      )
+      if (
+        priorTransactions.length !== 1 ||
+        paise(priorTransactions[0].amount) !== -Number(refund.amount) ||
+        priorCredits.length !== (Number(credit) > 0 ? 1 : 0) ||
+        (priorCredits[0] && paise(priorCredits[0].amount) !== credit)
+      )
+        throw new OperatorRefundRecoveryRequiredError()
+    }
+    // Controlled recovery rechecks each committed stage through its native reference.
     // A crash after either public API commits is recovered by querying it again.
     const transactions = await orders.listOrderTransactions({
       order_id: orderId,
@@ -501,6 +544,7 @@ async function importRefund(
           refund_id: existing.id,
           gateway_refund_id: event.refund_id,
         },
+        options: { jobId: "razorpay-import-refund-" + existing.id },
       })
       await checkpoint({ ...metadata, razorpay_refund_event_emitted: true })
     }
