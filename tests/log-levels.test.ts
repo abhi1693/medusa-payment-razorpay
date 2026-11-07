@@ -155,3 +155,35 @@ it("accepts a bounded new provider code without a value list", async () => {
   })
   expect(JSON.stringify(sink.mock.calls)).not.toContain("private")
 })
+
+it("preserves injected Medusa debug and error sinks", async () => {
+  const sink = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue(new Response("{}", { status: 401 }))
+  )
+  const provider = new RazorpayProvider(
+    { logger: sink },
+    {
+      mode: "test",
+      key_id: "rzp_test_fixture",
+      key_secret: "fixture",
+      log_level: "debug",
+    }
+  )
+  await expect(
+    provider.initiatePayment({
+      amount: 1,
+      currency_code: "inr",
+      context: { idempotency_key: "payses_fixture" },
+    })
+  ).rejects.toThrow()
+  expect(sink.debug).toHaveBeenCalled()
+  expect(sink.error).toHaveBeenCalled()
+  expect(JSON.parse(sink.error.mock.calls[0][0])).toMatchObject({
+    level: "critical",
+    operation: "create_order",
+    method: "POST",
+    http_status: 401,
+  })
+})

@@ -3,6 +3,7 @@ import {
   diagnostics,
   validateLogLevel,
   type LogLevel,
+  type DiagnosticLogger,
 } from "./diagnostics"
 import { createHash } from "node:crypto"
 import {
@@ -58,21 +59,10 @@ export default class RazorpayProvider extends AbstractPaymentProvider<Options> {
     RazorpayProvider.validateOptions(options)
     this.options = options
     this.log = diagnostics(container.logger as any, options.log_level)
-    const logger = container.logger as
-      { info?: unknown; warn?: unknown } | undefined
     this.api = new RazorpayGateway(
       options.key_id,
       options.key_secret,
-      logger &&
-        typeof logger.info === "function" &&
-        typeof logger.warn === "function"
-        ? {
-            info: (message) =>
-              (logger.info as (s: string) => void).call(logger, message),
-            warn: (message) =>
-              (logger.warn as (s: string) => void).call(logger, message),
-          }
-        : undefined,
+      container.logger as DiagnosticLogger | undefined,
       options.log_level
     )
   }
