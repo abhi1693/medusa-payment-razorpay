@@ -12,23 +12,28 @@
   ],
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --project tsconfig.test.json",
     "test": "vitest run",
-    "format:check": "prettier --check src tests",
-    "format": "prettier --write src tests",
+    "format:check": "prettier --check .",
+    "format": "prettier --write .",
     "prepare": "npm run build",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "lint": "eslint src tests --max-warnings=0",
+    "test:ci": "vitest run --reporter=default --reporter=junit --outputFile=test-results/vitest.xml"
   },
   "peerDependencies": {
     "@medusajs/framework": "2.22.2 || 2.22.4"
   },
-  "dependencies": {},
   "devDependencies": {
+    "@eslint/js": "10.0.1",
     "@medusajs/framework": "2.22.4",
     "@types/node": "^24.0.0",
+    "eslint": "10.14.0",
+    "globals": "17.14.0",
+    "prettier": "3.9.10",
     "typescript": "^5.9.0",
-    "vitest": "4.1.12",
-    "prettier": "3.9.10"
+    "typescript-eslint": "8.72.1",
+    "vitest": "4.1.12"
   },
   "exports": {
     ".": {

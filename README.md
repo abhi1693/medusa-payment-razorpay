@@ -13,16 +13,16 @@ A Razorpay payment provider for Medusa v2, with verified checkout results, autom
 
 ## Supported payment lifecycle
 
-| Capability            | Behavior                                                                                                                                                                                             |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Payment sessions      | Creates a Razorpay order from the server-provided Medusa amount, with precise rupee-to-paise conversion and a native session association.                                                            |
-| Checkout verification | Verifies the signature, fetched payment and order, amount, INR currency and session association before accepting payment.                                                                            |
-| Automatic capture     | Requires captured gateway funds before authorization completes. Native capture verifies gateway state and never sends another capture request.                                                       |
-| Failed attempts       | Allows another attempt on the same order after the previous bound attempt has failed. Successful or in-progress associations cannot silently be replaced.                                            |
-| Cancellation          | Cancels/deletes an unpaid session locally; rejects cancellation when gateway payment is authorized or captured. It does not cancel a Razorpay order or issue an implicit refund.                     |
-| Refunds               | Full and partial normal-speed refunds, minimum INR 1.00, with a stable native operation key sent through Razorpay's idempotent refund API.                                                           |
-| Payment webhooks      | Signed `payment.authorized` and `payment.captured` events re-fetch gateway state; native processing proceeds only after capture.                                                                     |
-| Refund observation    | Signed refund events trigger authenticated current-state checks through optional application wiring. Dashboard refunds and later failures are **not automatically imported into Medusa accounting**. |
+| Capability            | Behavior                                                                                                                                                                                                                                                                                               |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Payment sessions      | Creates a Razorpay order from the server-provided Medusa amount, with precise rupee-to-paise conversion and a native session association.                                                                                                                                                              |
+| Checkout verification | Verifies the signature, fetched payment and order, amount, INR currency and session association before accepting payment.                                                                                                                                                                              |
+| Automatic capture     | Requires captured gateway funds before authorization completes. Native capture verifies gateway state and never sends another capture request.                                                                                                                                                         |
+| Failed attempts       | Allows another attempt on the same order after the previous bound attempt has failed. Successful or in-progress associations cannot silently be replaced.                                                                                                                                              |
+| Cancellation          | Cancels/deletes an unpaid session locally; rejects cancellation when gateway payment is authorized or captured. It does not cancel a Razorpay order or issue an implicit refund.                                                                                                                       |
+| Refunds               | Full and partial normal-speed refunds, minimum INR 1.00, with a stable native operation key sent through Razorpay's idempotent refund API.                                                                                                                                                             |
+| Payment webhooks      | Signed `payment.authorized` and `payment.captured` events re-fetch gateway state; native processing proceeds only after capture.                                                                                                                                                                       |
+| Refund observation    | Signed refund events trigger authenticated current-state checks through optional application wiring. The optional importer records verified processed Dashboard and deferred native refunds in native accounting without sending funds again. Pending/failed refunds do not create accounting entries. |
 
 The declared framework peer versions are **2.22.2 and 2.22.4**. Native application validation targets Medusa 2.22.2; package development uses 2.22.4. This repository provides a payment module provider and server helpers. Checkout UI, customer authorization, terms acceptance, order-completion policy and infrastructure belong to the consuming application.
 
@@ -91,15 +91,15 @@ For the example registration above, use your **backend's public HTTPS origin** w
 
 Subscribe to `payment.authorized` and `payment.captured` in the matching Razorpay test account. Preserve the exact raw request bytes and `x-razorpay-signature` header. The provider verifies HMAC signatures and fetches current gateway state, making repeated and out-of-order notifications safe to re-evaluate. `payment.failed` and other unsupported payment events are ignored; they do not invalidate a later checkout attempt.
 
-For refund observation, also subscribe to `refund.created`, `refund.processed`, `refund.failed` and `refund.speed_changed`, and wire the exported server helpers into an application subscriber. These events are not handled as native refund-accounting updates by registering the provider alone. A speed change updates informational observations only; it never means settlement or initiates a refund.
+For refund observation, also subscribe to `refund.created`, `refund.processed`, `refund.failed` and `refund.speed_changed`, and wire the exported server helpers into an application subscriber. These events require an application subscriber calling the importer; provider registration alone does not import accounting. A speed change updates informational observations only; it never means settlement or initiates a refund.
 
 See [server integration](docs/server-integration.md) for the helper contract, shared locking hook and subscriber requirements. Use durable Medusa event infrastructure and monitor failed jobs; HTTP acknowledgement is not proof of successful reconciliation.
 
 ## Refunds and reconciliation
 
-Initiate refunds through Medusa's native refund workflow. Preserve its original operation identity for retries. A pending gateway refund is an accepted request, not completed bank settlement. `last_refund_initial_status` is an immutable response snapshot; retrieve the gateway refund for its current state.
+Initiate refunds through Medusa's native refund workflow and preserve the operation identity. A synchronously processed response completes normally. A pending gateway response returns an explanatory conflict and remains outside successful native refund accounting. Wire the signed refund subscriber below: a later processed event imports one successful native refund, while a later failed event creates no successful refund accounting. The original native failed attempt remains as audit evidence; it does not mean the gateway request failed. Do not issue a new operation merely to retry a pending request. `last_refund_initial_status` is an immutable processed-response snapshot, not proof of bank receipt.
 
-The exported reconciliation helpers compare authenticated gateway payment/order/refund information with native records. They never issue another refund, fabricate a native financial record, or automatically resolve ambiguous Dashboard activity. Review discrepancies before retrying an uncertain request. Applications can supply a `refund_guard` and a common session-keyed lock to coordinate refund execution, observation and order completion.
+The exported reconciliation helpers compare authenticated gateway payment/order/refund information with native records. The read-only report helpers never change records. The optional importer uses native financial APIs only for individually verified processed Dashboard and deferred native refunds and rejects ambiguous associations. Review discrepancies before retrying an uncertain request. Applications can supply a `refund_guard` and a common session-keyed lock to coordinate refund execution, observation and order completion.
 
 Read [operations and validation](docs/operations.md) for pending/failed refund handling, uncertain outcomes, monitoring and test limits.
 
@@ -120,3 +120,45 @@ The image installs the committed lockfile with `npm ci`; the tools container has
 ## License
 
 [MIT](LICENSE) © Abhimanyu Saharan.
+
+### Logging
+
+Set provider option `log_level` to `debug`, `info` (default), `warning`, `error`, `critical`, or `none`. Thresholds include the selected level and higher severities. `none` emits no plugin log records. JSON records contain `level`, a clear `message`, and `context`. The simple shared logger uses Medusa's injected logger, with a console fallback. Warning uses the `warn` sink; critical uses `error` while retaining its JSON severity.
+
+All API calls use one typed HTTP client with `get`, `post`, `put`, `patch` and `delete`. Authentication, timeout, parsing, and request/response logging live in its single executor. Callers do not add HTTP logging code or classifications. Request context includes the complete supplied API path (including pagination), method, a local correlation UUID and timing. Paths contain opaque gateway resource IDs; these are included as requested.
+
+Debug records receive the complete request body and provider response, including unknown response keys. There is no provider-field extraction or event-schema framework. Authentication headers are never supplied to the logger. Redaction is intentionally not implemented for the current debugging stage. Raw debug bodies can contain personal or sensitive data. Restrict access and retention, and use test data. Authentication headers and configured credentials are not intentionally added to log context; an upstream response or caller-supplied body can still contain sensitive values. Other levels omit request/response bodies.
+
+### Common API client
+
+`RazorpayGateway` takes a named `GatewayOptions` object with credentials, optional Medusa logger, log level, timeout and injectable `fetch` for isolated testing. The base host is fixed, redirects are rejected, authentication cannot be overridden by custom headers, and timeout is bounded at 15 seconds. Reconciliation uses its GET-only adapter with a 30-second aggregate deadline. The compatibility `request` method delegates to the same executor; plugin internals use explicit verbs.
+
+`GatewayRequestError` has typed method, failure kind and optional HTTP status. Transport failures are generic; response errors remain distinct from HTTP errors. No HTTP method retries automatically. `reconciliation_required` is a precaution on failed writes, not proof of a mismatch or a completed reconciliation. GET failures set it false. A successful HTTP response does not establish refund settlement.
+
+### Development checks
+
+Run project commands through Docker Compose:
+
+```sh
+docker compose build tools
+docker compose run --rm tools npm run format:check
+docker compose run --rm tools npm run lint
+docker compose run --rm tools npm run typecheck
+docker compose run --rm tools npm test
+docker compose run --rm tools npm run build
+```
+
+Prettier checks the repository, including documentation and configuration; `.editorconfig` and `.prettierrc.json` define the shared editor style. Generated files, private environment files and local scratch files are ignored. To apply formatting to the checkout, use the tools container with the repository mounted at `/plugin` and its image dependencies available, or the Compose bootstrap service after installing development dependencies.
+
+Typecheck validates both the published source and unit tests. The test project matches Vitest's ESM resolution; malformed runtime fixture values remain explicit test boundaries. The scripts under `tests/native` are consuming-Medusa integration fixtures and resolve/run inside that application's isolated test environment, not the standalone unit-test project.
+
+The GitHub workflow runs formatting, lint, typecheck and build as separately visible checks. Each unit suite runs independently in its own matrix job and uploads JUnit XML. Reproduce a selected suite locally with `docker compose run --rm tools npm test -- tests/http-client.test.ts`. These self-contained suites use mocked gateway/service fixtures and do not perform gateway transactions. Hosted results and consuming-application integration evidence remain separate from local unit checks.
+
+### Rejected refund requests
+
+A refund POST rejected with HTTP 400 raises `RazorpayRefundRejectedError`
+(`invalid_data`, code `razorpay_refund_rejected`). Medusa Admin can show its
+actionable message instead of a generic server error. The message asks operators
+to verify the refund status and available balance before retrying. HTTP 400 alone does not establish insufficient balance.
+Transport failures and other uncertain responses retain reconciliation handling;
+the provider never retries a refund automatically.

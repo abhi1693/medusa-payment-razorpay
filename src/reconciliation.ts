@@ -1,3 +1,5 @@
+import { RazorpayGateway, GatewayRequestError } from "./gateway"
+import { createLogger, type LogLevel, type LoggerSink } from "./logger"
 import type {
   BigNumberInput,
   MedusaContainer,
@@ -6,6 +8,8 @@ import type {
 import { BigNumber, MedusaError, Modules } from "@medusajs/framework/utils"
 import { record, records } from "./records"
 export type ReconciliationOptions = {
+  log_level?: LogLevel
+  logger?: LoggerSink
   mode: "test"
   key_id: string
   key_secret: string
@@ -32,7 +36,8 @@ function sum(values: number[]) {
     throw new Error("Total exceeds supported range")
   return Number(total)
 }
-export function gatewayReader(options: ReconciliationOptions) {
+export type GatewayReader = (path: string) => Promise<Record<string, unknown>>
+export function gatewayReader(options: ReconciliationOptions): GatewayReader {
   const key = options.key_id,
     secret = options.key_secret
   if (
@@ -45,29 +50,39 @@ export function gatewayReader(options: ReconciliationOptions) {
       MedusaError.Types.NOT_ALLOWED,
       "Test gateway configuration is required"
     )
+  const client = new RazorpayGateway({
+    key_id: key,
+    key_secret: secret,
+    logger: options.logger,
+    log_level: options.log_level,
+  })
   const deadline = Date.now() + 30000
+  // Expose GET only; retain a total deadline across reconciliation reads.
   return async (path: string) => {
     const remaining = deadline - Date.now()
     if (remaining <= 0)
       throw new Error("Gateway reconciliation timed out; no records changed")
-    const response = await fetch("https://api.razorpay.com/v1/" + path, {
-      method: "GET",
-      headers: {
-        Authorization:
-          "Basic " + Buffer.from(key + ":" + secret).toString("base64"),
-      },
-      signal: AbortSignal.timeout(Math.min(15000, remaining)),
-      redirect: "error",
-    })
-    if (!response.ok)
-      throw new Error(
-        `Gateway reconciliation unavailable (HTTP ${response.status}); no records changed`
+    try {
+      return record(await client.get(path, Math.min(15000, remaining)))
+    } catch (error) {
+      if (
+        error instanceof GatewayRequestError &&
+        error.kind === "http" &&
+        error.status !== undefined
       )
-    return record(await response.json())
+        throw new Error(
+          `Gateway reconciliation unavailable (HTTP ${error.status}); no records changed`,
+          { cause: error }
+        )
+      throw new Error(
+        "Gateway reconciliation transport unavailable; no records changed",
+        { cause: error }
+      )
+    }
   }
 }
 // Report only: never update financial records, retry a refund or issue a gateway POST.
-export async function reconcileRazorpayPayment(
+async function reconcilePayment(
   scope: MedusaContainer,
   id: string,
   options: ReconciliationOptions
@@ -78,6 +93,7 @@ export async function reconcileRazorpayPayment(
     .resolve<IPaymentModuleService>(Modules.PAYMENT)
     .retrievePayment(id, {
       relations: ["captures", "refunds", "payment_session"],
+      options: { refresh: true },
     })
   const data = record(native.data)
   if (
@@ -225,6 +241,27 @@ export async function reconcileRazorpayPayment(
   }
 }
 
+export async function reconcileRazorpayPayment(
+  scope: MedusaContainer,
+  id: string,
+  options: ReconciliationOptions
+) {
+  const logger = createLogger({
+    sink: options.logger,
+    level: options.log_level,
+  })
+  logger.debug("Razorpay payment reconciliation started")
+  try {
+    const result = await reconcilePayment(scope, id, options)
+    if (result.discrepancies.length)
+      logger.warning("Razorpay payment reconciliation requires review")
+    else logger.info("Razorpay payment reconciliation completed")
+    return result
+  } catch (error) {
+    logger.warning("Razorpay payment reconciliation failed")
+    throw error
+  }
+}
 export type RazorpayReconciliationReport = Awaited<
   ReturnType<typeof reconcileRazorpayPayment>
 >

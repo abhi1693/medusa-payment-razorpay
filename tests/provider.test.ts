@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { createHmac } from "node:crypto"
+import { createHash, createHmac } from "node:crypto"
 import { BigNumber } from "@medusajs/framework/utils"
 import Provider, { type Options } from "../src/service"
 import { minor, verify, verifyRazorpayCheckout } from "../src/security"
-import { RazorpayGateway, type Entity, type Gateway } from "../src/gateway"
+import { RazorpayGateway, GatewayRequestError } from "../src/gateway"
+import { RazorpayRefundRejectedError } from "../src/razorpay-refund-rejected-error"
 const options: Options = {
   mode: "test",
   key_id: "rzp_test_fixture",
@@ -32,18 +33,34 @@ const payment = {
 }
 const sign = (s: string, secret = options.key_secret) =>
   createHmac("sha256", secret).update(s).digest("hex")
+type GatewayCall = (
+  path: string,
+  body?: unknown,
+  headers?: Record<string, string>
+) => Promise<unknown>
 class TestProvider extends Provider {
-  setGateway(api: Gateway) {
-    this.api = api
+  setGateway(api: {
+    get: (path: string) => Promise<unknown>
+    post: GatewayCall
+  }): void {
+    this.api = {
+      get: async <T>(path: string): Promise<T> => (await api.get(path)) as T,
+      post: async <T>(
+        path: string,
+        body: unknown,
+        headers?: Record<string, string>
+      ): Promise<T> => (await api.post(path, body, headers)) as T,
+    }
   }
 }
 let provider: TestProvider
-let request: ReturnType<typeof vi.fn>
+let request: ReturnType<typeof vi.fn<GatewayCall>>
 beforeEach(() => {
-  request = vi.fn(async (path: string) => {
+  request = vi.fn<GatewayCall>(async (path: string) => {
     if (path === "orders/order_123") return order
     if (path === "orders/order_123/payments") return { items: [payment] }
     if (path === "payments/pay_123") return payment
+    if (path.startsWith("payments/pay_123/refunds?")) return { items: [] }
     if (path === "orders") return order
     if (path === "payments/pay_123/refund")
       return {
@@ -56,7 +73,13 @@ beforeEach(() => {
     throw new Error("Unexpected request " + path)
   })
   provider = new TestProvider({}, options)
-  provider.setGateway({ request: request as Gateway["request"] })
+  provider.setGateway({
+    get: (path) => request(path),
+    post: (path, body, headers) =>
+      headers === undefined
+        ? request(path, body)
+        : request(path, body, headers),
+  })
 })
 describe("INR amount and signatures", () => {
   it.each([
@@ -178,7 +201,7 @@ describe("native provider lifecycle", () => {
   it("authorizes only captured funds without another capture POST", async () => {
     expect((await provider.authorizePayment({ data })).status).toBe("captured")
     await provider.capturePayment({ data })
-    expect(request.mock.calls.every((c) => c.length === 1)).toBe(true)
+    expect(request.mock.calls.every((c) => c[1] === undefined)).toBe(true)
   })
   it("waits while automatic capture is pending", async () => {
     request.mockImplementation(async (path: string) =>
@@ -228,8 +251,12 @@ describe("native provider lifecycle", () => {
     })
     const calls = request.mock.calls.filter((c) => c[0].endsWith("/refund"))
     expect(calls[0]).toEqual(calls[1])
-    expect(calls[0][1]).toEqual({ amount: 100, speed: "normal" })
-    expect(calls[0][2]["X-Refund-Idempotency"]).toMatch(/^[a-f0-9]{64}$/)
+    expect(calls[0][1]).toMatchObject({
+      amount: 100,
+      speed: "normal",
+      notes: { medusa_payment_session_id: data.session_id },
+    })
+    expect(calls[0][2]?.["X-Refund-Idempotency"]).toMatch(/^[a-f0-9]{64}$/)
   })
   it("fails closed without a refund operation key", async () =>
     expect(provider.refundPayment({ data, amount: 1 })).rejects.toThrow())
@@ -245,6 +272,7 @@ describe("native provider lifecycle", () => {
     request.mockImplementation(async (path: string) => {
       if (path === "orders/order_123") return order
       if (path.endsWith("/payments")) return { items: [payment] }
+      if (path.includes("/refunds?")) return { items: [] }
       throw new Error("timeout")
     })
     await expect(
@@ -313,10 +341,10 @@ describe("gateway transport", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(new Response("secret", { status: 500 }))
     await expect(
-      new RazorpayGateway(options.key_id, options.key_secret).request(
-        "orders",
-        {}
-      )
+      new RazorpayGateway({
+        key_id: options.key_id,
+        key_secret: options.key_secret,
+      }).request("orders", {})
     ).rejects.toThrow("reconcile")
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(fetchMock.mock.calls[0][1]).toMatchObject({
@@ -354,7 +382,13 @@ describe("refund execution security boundary", () => {
         },
       }
     )
-    guarded.setGateway({ request: request as Gateway["request"] })
+    guarded.setGateway({
+      get: (path) => request(path),
+      post: (path, body, headers) =>
+        headers === undefined
+          ? request(path, body)
+          : request(path, body, headers),
+    })
     const operation = guarded.refundPayment(input)
     await entered
     expect(request).not.toHaveBeenCalled()
@@ -379,7 +413,13 @@ describe("refund execution security boundary", () => {
         },
       }
     )
-    guarded.setGateway({ request: request as Gateway["request"] })
+    guarded.setGateway({
+      get: (path) => request(path),
+      post: (path, body, headers) =>
+        headers === undefined
+          ? request(path, body)
+          : request(path, body, headers),
+    })
     await expect(guarded.refundPayment(input)).rejects.toThrow(
       "coordination unavailable"
     )
@@ -407,7 +447,13 @@ describe("refund execution security boundary", () => {
         },
       }
     )
-    guarded.setGateway({ request: request as Gateway["request"] })
+    guarded.setGateway({
+      get: (path) => request(path),
+      post: (path, body, headers) =>
+        headers === undefined
+          ? request(path, body)
+          : request(path, body, headers),
+    })
     await expect(guarded.refundPayment(input)).rejects.toThrow(
       "uncertain gateway response"
     )
@@ -459,18 +505,18 @@ describe("refund execution security boundary", () => {
             payment_id: "pay_123",
             amount: value.paise,
             currency: "INR",
-            status: "pending",
+            status: "processed",
           }
         : original(path)
     )
     await expect(
       provider.refundPayment({ ...input, amount: value.amount })
     ).resolves.toMatchObject({
-      data: { last_refund_initial_status: "pending" },
+      data: { last_refund_initial_status: "processed" },
     })
     expect(request).toHaveBeenCalledWith(
       "payments/pay_123/refund",
-      { amount: value.paise, speed: "normal" },
+      expect.objectContaining({ amount: value.paise, speed: "normal" }),
       expect.any(Object)
     )
   })
@@ -641,3 +687,174 @@ it.each(["", "   ", undefined])(
     )
   }
 )
+
+describe("settlement-aware refund execution", () => {
+  const input = {
+    data,
+    amount: 1,
+    context: { idempotency_key: "settlement_operation" },
+  }
+  const hash = createHash("sha256")
+    .update("order_123:settlement_operation")
+    .digest("hex")
+  const refund = (status = "processed") => ({
+    id: "rfnd_existing",
+    payment_id: "pay_123",
+    amount: 100,
+    currency: "INR",
+    status,
+    notes: { medusa_refund_key: hash, medusa_payment_session_id: "payses_123" },
+  })
+  function listed(entries: any[], detail?: any) {
+    const base = request.getMockImplementation()!
+    request.mockImplementation(async (path: string, ...args: any[]) =>
+      path.includes("/refunds?")
+        ? { items: entries }
+        : path === "refunds/rfnd_existing"
+          ? detail || entries[0]
+          : base(path, ...args)
+    )
+  }
+  it("acknowledges an existing processed operation with GETs and no second POST", async () => {
+    listed([refund()])
+    await expect(provider.refundPayment(input)).rejects.toMatchObject({
+      name: "GatewayRefundReconciliationError",
+      gateway_refund_id: "rfnd_existing",
+    })
+    expect(request.mock.calls.some((c) => c[0].endsWith("/refund"))).toBe(false)
+  })
+  it.each(["pending", "failed"])(
+    "does not POST an existing %s operation",
+    async (status) => {
+      listed([refund(status)])
+      await expect(provider.refundPayment(input)).rejects.toThrow(
+        status === "pending" ? "is pending" : "not accepted"
+      )
+      expect(request.mock.calls.some((c) => c[0].endsWith("/refund"))).toBe(
+        false
+      )
+    }
+  )
+  it("blocks a new operation while an external refund is pending", async () => {
+    listed([{ ...refund("pending"), notes: {} }])
+    await expect(provider.refundPayment(input)).rejects.toThrow(
+      "Do not issue another refund"
+    )
+    expect(request.mock.calls.some((c) => c[0].endsWith("/refund"))).toBe(false)
+  })
+  it("does not report a newly accepted pending response as native success", async () => {
+    const base = request.getMockImplementation()!
+    request.mockImplementation(async (path: string, ...args: any[]) =>
+      path.endsWith("/refund") ? refund("pending") : base(path, ...args)
+    )
+    await expect(provider.refundPayment(input)).rejects.toMatchObject({
+      name: "GatewayRefundPendingError",
+      gateway_refund_id: "rfnd_existing",
+    })
+    expect(
+      request.mock.calls.filter((c) => c[0].endsWith("/refund"))
+    ).toHaveLength(1)
+  })
+  it.each(["payment", "currency", "duplicate", "detail"])(
+    "rejects invalid listed %s before a refund POST",
+    async (kind) => {
+      const entry: any = refund()
+      if (kind === "payment") entry.payment_id = "pay_other"
+      if (kind === "currency") entry.currency = "USD"
+      listed(
+        kind === "duplicate" ? [entry, entry] : [entry],
+        kind === "detail" ? { ...entry, id: "rfnd_swapped" } : undefined
+      )
+      await expect(provider.refundPayment(input)).rejects.toThrow()
+      expect(request.mock.calls.some((c) => c[0].endsWith("/refund"))).toBe(
+        false
+      )
+    }
+  )
+  it("rejects changing the amount of an existing keyed operation without sending funds", async () => {
+    listed([refund()])
+    await expect(
+      provider.refundPayment({ ...input, amount: 2 })
+    ).rejects.toThrow("not accepted")
+    expect(request.mock.calls.some((c) => c[0].endsWith("/refund"))).toBe(false)
+  })
+  it("enforces remaining gateway funds before sending another refund", async () => {
+    listed([{ ...refund(), amount: 12300, notes: {} }])
+    await expect(provider.refundPayment(input)).rejects.toThrow(
+      "remaining gateway balance"
+    )
+    expect(request.mock.calls.some((c) => c[0].endsWith("/refund"))).toBe(false)
+  })
+  it("retains a bounded review limit for large histories", async () => {
+    const base = request.getMockImplementation()!
+    request.mockImplementation(async (path: string, ...args: any[]) => {
+      if (path.includes("/refunds?")) {
+        const skip = Number(path.split("skip=")[1])
+        return {
+          items: Array.from({ length: 100 }, (_, n) => ({
+            ...refund(),
+            id: "rfnd_page" + (skip + n),
+            amount: 1,
+            notes: {},
+          })),
+        }
+      }
+      return base(path, ...args)
+    })
+    await expect(provider.refundPayment(input)).rejects.toThrow(
+      "limit exceeded"
+    )
+    expect(request.mock.calls.some((c) => c[0].endsWith("/refund"))).toBe(false)
+  })
+})
+
+describe("native Admin refund rejection", () => {
+  const input = {
+    data,
+    amount: 1,
+    context: { idempotency_key: "rejected_refund" },
+  }
+  it("returns an actionable native Medusa error for a rejected refund POST", async () => {
+    const failure = new GatewayRequestError(
+      "raw provider details",
+      "POST",
+      "http",
+      400
+    )
+    const base = request.getMockImplementation()!
+    request.mockImplementation(async (path, ...args) => {
+      if (path.endsWith("/refund")) throw failure
+      return base(path, ...args)
+    })
+    const error = await provider
+      .refundPayment(input)
+      .catch((error: unknown) => error)
+    expect(error).toBeInstanceOf(RazorpayRefundRejectedError)
+    expect(error).toMatchObject({
+      cause: failure,
+      code: "razorpay_refund_rejected",
+    })
+    expect(error).toMatchObject({ type: "invalid_data" })
+    expect((error as Error).message).toContain("Razorpay rejected the refund")
+    expect((error as Error).message).toContain("verify its status")
+    expect((error as Error).message).not.toContain("raw provider details")
+    expect(
+      request.mock.calls.filter(([path]) => path.endsWith("/refund"))
+    ).toHaveLength(1)
+  })
+  it.each([
+    ["GET", "http", 400],
+    ["POST", "http", 500],
+    ["POST", "transport", undefined],
+    ["POST", "response", 200],
+  ] as const)("does not misclassify %s %s %s", async (method, kind, status) => {
+    const failure = new GatewayRequestError(
+      "uncertain request",
+      method,
+      kind,
+      status
+    )
+    request.mockRejectedValue(failure)
+    await expect(provider.refundPayment(input)).rejects.toBe(failure)
+  })
+})

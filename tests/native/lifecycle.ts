@@ -6,7 +6,14 @@ import {
   ModulesSdkUtils,
   SoftDeletableFilterKey,
 } from "@medusajs/framework/utils"
-import { updatePaymentSessionClientDataWorkflow } from "@medusajs/medusa/core-flows"
+import {
+  updatePaymentSessionClientDataWorkflow,
+  createOrderWorkflow,
+  createOrderPaymentCollectionWorkflow,
+  capturePaymentWorkflow,
+  refundPaymentWorkflow,
+} from "@medusajs/medusa/core-flows"
+import { importRazorpayRefund } from "@abhi1693/medusa-payment-razorpay"
 export default async function lifecycle({ container }: ExecArgs) {
   const url = new URL(process.env.DATABASE_URL!)
   assert.ok(url.pathname.startsWith("/razorpay_isolated_"))
@@ -20,7 +27,7 @@ export default async function lifecycle({ container }: ExecArgs) {
   const realFetch = globalThis.fetch
   let order: any
   let payment: any
-  let refunds = new Map<string, any>()
+  const refunds = new Map<string, any>()
   let refundPosts = 0
   let capturePosts = 0
   let loseResponse = false
@@ -41,6 +48,10 @@ export default async function lifecycle({ container }: ExecArgs) {
     else if (path === "orders/order_native/payments")
       result = { items: payment ? [payment] : [] }
     else if (path === "payments/pay_native") result = payment
+    else if (path.includes("/refunds?"))
+      result = { items: [...refunds.values()] }
+    else if (path.startsWith("refunds/"))
+      result = [...refunds.values()].find((r) => r.id === path.slice(8))
     else if (path.endsWith("/capture")) {
       capturePosts++
       throw Error("Auto-capture must not POST capture")
@@ -73,6 +84,7 @@ export default async function lifecycle({ container }: ExecArgs) {
           currency: "INR",
           status: "processed",
           payment_id: payment.id,
+          notes: body.notes,
         })
         payment.amount_refunded = (payment.amount_refunded || 0) + body.amount
       }
@@ -88,10 +100,29 @@ export default async function lifecycle({ container }: ExecArgs) {
     })
   }
   try {
-    const collection = await service.createPaymentCollections({
-      amount: 123.45,
+    const region = await container.resolve(Modules.REGION).createRegions({
+      name: "Isolated INR refund fixture",
       currency_code: "inr",
+      countries: ["in"],
+      automatic_taxes: false,
     })
+    const channel = await container
+      .resolve(Modules.SALES_CHANNEL)
+      .createSalesChannels({ name: "Isolated refund channel" })
+    const { result: orderFixture } = await createOrderWorkflow(container).run({
+      input: {
+        region_id: region.id,
+        sales_channel_id: channel.id,
+        currency_code: "inr",
+        items: [
+          { title: "Isolated refund fixture", quantity: 1, unit_price: 123.45 },
+        ],
+      },
+    })
+    const { result: collections } = await createOrderPaymentCollectionWorkflow(
+      container
+    ).run({ input: { order_id: orderFixture.id, amount: 123.45 } })
+    const collection = collections[0]
     const session = await service.createPaymentSession(collection.id, {
       provider_id: "pp_razorpay_razorpay",
       amount: 123.45,
@@ -139,16 +170,20 @@ export default async function lifecycle({ container }: ExecArgs) {
     assert.equal(native.data.payment_id, payment.id)
     const replay = await service.authorizePaymentSession(session.id, {})
     assert.equal(replay!.id, native.id)
-    await service.capturePayment({ payment_id: native.id })
+    await capturePaymentWorkflow(container).run({
+      input: { payment_id: native.id },
+    })
     let saved = await service.retrievePayment(native.id, {
       relations: ["captures", "refunds"],
     })
     assert.equal(saved.captures.length, 1)
     assert.equal(capturePosts, 0)
-    await service.refundPayment({
-      payment_id: native.id,
-      amount: 1,
-      idempotency_key: "native_refund_1",
+    await refundPaymentWorkflow(container).run({
+      input: {
+        payment_id: native.id,
+        amount: 1,
+        idempotency_key: "native_refund_1",
+      },
     })
     await service.refundPayment({
       payment_id: native.id,
@@ -176,11 +211,29 @@ export default async function lifecycle({ container }: ExecArgs) {
       2,
       "Uncertain soft-deleted refund must remain visible to completion review"
     )
-    await service.refundPayment({
-      payment_id: native.id,
-      amount: 2,
-      idempotency_key: "native_refund_lost",
-    })
+    await assert.rejects(
+      service.refundPayment({
+        payment_id: native.id,
+        amount: 2,
+        idempotency_key: "native_refund_lost",
+      }),
+      /already processed/
+    )
+    await importRazorpayRefund(
+      container,
+      { payment_id: payment.id, refund_id: [...refunds.values()][1].id },
+      {
+        mode: "test",
+        key_id: "rzp_test_fixture",
+        key_secret: "fixture_secret",
+        coordinate: async (_sessions, work) => work(),
+      }
+    )
+    assert.equal(
+      refundPosts,
+      2,
+      "Lost-response recovery must GET existing funds rather than POST again"
+    )
     assert.equal(refunds.size, 2)
     assert.equal(payment.amount_refunded, 300)
     saved = await service.retrievePayment(native.id, {

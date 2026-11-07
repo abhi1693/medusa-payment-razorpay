@@ -4,3 +4,4 @@ coverage/
 .env
 .local/
 .idea/
+test-results/

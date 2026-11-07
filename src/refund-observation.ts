@@ -85,7 +85,7 @@ export async function observeRazorpayRefund(
   const service = scope.resolve<IPaymentModuleService>(Modules.PAYMENT)
   const sessions = await service.listPaymentSessions(
     { id: sessionId },
-    { relations: ["payment"], take: 1 }
+    { relations: ["payment"], take: 1, options: { refresh: true } }
   )
   const native = record(record(sessions[0]).payment)
   // Uncaptured automatic refunds and other applications have no native payment.

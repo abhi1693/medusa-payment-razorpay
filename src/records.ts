@@ -3,6 +3,6 @@ export function record(value: unknown): Record<string, unknown> {
     ? (value as Record<string, unknown>)
     : {}
 }
-export function records(value: unknown) {
+export function records(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value) ? value.map(record) : []
 }
