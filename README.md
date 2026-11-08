@@ -138,7 +138,7 @@ Prettier checks the repository, including documentation and configuration; `.edi
 
 Typecheck validates both the published source and unit tests. The test project matches Vitest's ESM resolution; malformed runtime fixture values remain explicit test boundaries. The scripts under `tests/native` are consuming-Medusa integration fixtures and resolve/run inside that application's isolated test environment, not the standalone unit-test project.
 
-The GitHub workflow runs formatting, lint, typecheck and build as separately visible checks, reusing the pinned Node CI and security workflows from `abhi1693/actions`. Each unit suite runs independently in its own matrix job and uploads JUnit XML. Reproduce a selected suite locally with `docker compose run --rm tools npm test -- tests/http-client.test.ts`. These self-contained suites use mocked gateway/service fixtures and do not perform gateway transactions. Hosted results and consuming-application integration evidence remain separate from local unit checks.
+The GitHub workflow runs formatting, lint, typecheck and build as separately visible checks, reusing the Node CI and security workflows from `abhi1693/actions@v1`. Each unit suite runs independently in its own matrix job and uploads JUnit XML. Reproduce a selected suite locally with `docker compose run --rm tools npm test -- tests/http-client.test.ts`. These self-contained suites use mocked gateway/service fixtures and do not perform gateway transactions. Hosted results and consuming-application integration evidence remain separate from local unit checks.
 
 ## Rejected refund requests
 
