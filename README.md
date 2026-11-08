@@ -151,7 +151,7 @@ the provider never retries a refund automatically.
 
 ## Release status
 
-The `0.0.1` artifact includes compiled JavaScript, TypeScript declarations, the license, README and integration/operations guides. `package:check` builds and packs it locally, checks its contents, loads its public exports and compiles a consumer against its packed declarations. CI runs this as an independent check without publishing. Release notes belong to the GitHub release.
+The `0.0.2` artifact includes compiled JavaScript, TypeScript declarations, the license, README and integration/operations guides. `package:check` builds and packs it locally, checks its contents, loads its public exports and compiles a consumer against its packed declarations. CI runs this as an independent check without publishing. Release notes belong to the GitHub release.
 
 `ci.yaml` is displayed as **CI** and runs on every push and pull request, plus reusable/manual invocations. `release.yml` prepares an exact committed package version through the shared `abhi1693/actions@v1` workflow after CI passes. Preparation builds and checks the package, signs the exact archive and creates a draft GitHub release containing the archive, checksums and provenance. It does not publish to npm. Commit matching `package.json` and lockfile versions before dispatching preparation. Optional `docs/releases/VERSION.md` notes override GitHub-generated draft notes.
 
