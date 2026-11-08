@@ -1,6 +1,6 @@
 {
   "name": "@abhi1693/medusa-payment-razorpay",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -64,7 +64,9 @@
     "webhooks",
     "medusa-plugin",
     "ecommerce",
-    "typescript"
+    "typescript",
+    "medusa-plugin-integration",
+    "medusa-plugin-payment"
   ],
   "publishConfig": {
     "access": "public"
