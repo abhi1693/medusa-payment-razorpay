@@ -1,0 +1,25 @@
+name: Prepare release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact package version to prepare as a draft.
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  validate:
+    uses: ./.github/workflows/ci.yaml
+  release:
+    needs: validate
+    uses: abhi1693/actions/.github/workflows/npm-release.yml@v1
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    with:
+      operation: prepare
+      package-name: "@abhi1693/medusa-payment-razorpay"
+      version: ${{ inputs.version }}
+      build-command: npm run package:check

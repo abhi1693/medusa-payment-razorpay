@@ -1,64 +1,26 @@
-name: Publish
+name: Publish to npm
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published release tag. Run recovery from master.
+        type: string
+        required: true
 permissions:
   contents: read
-concurrency:
-  group: npm-release-${{ github.event.release.tag_name }}
-  cancel-in-progress: false
 jobs:
   validate:
-    if: github.repository == 'abhi1693/medusa-payment-razorpay' && !github.event.release.prerelease
     uses: ./.github/workflows/ci.yaml
   publish:
     needs: validate
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    environment: npm-publish
+    uses: abhi1693/actions/.github/workflows/npm-publish.yml@v1
     permissions:
       contents: read
+      attestations: read
       id-token: write
-    env:
-      RELEASE_TAG: ${{ github.event.release.tag_name }}
-    steps:
-      - name: Checkout released source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Set up npm OIDC client
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: "24.21.0"
-          registry-url: https://registry.npmjs.org
-      - name: Verify stable release source and version
-        id: source
-        run: |
-          node --input-type=module <<'NODE'
-          import assert from "node:assert/strict"
-          import fs from "node:fs"
-          import { execFileSync } from "node:child_process"
-          const tag = process.env.RELEASE_TAG
-          assert.match(tag, /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/)
-          assert.equal(process.env.GITHUB_REF, `refs/tags/${tag}`)
-          const source = execFileSync("git", ["rev-parse", `${tag}^{commit}`], { encoding: "utf8" }).trim()
-          assert.equal(source, process.env.GITHUB_SHA)
-          execFileSync("git", ["merge-base", "--is-ancestor", source, "origin/master"])
-          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"))
-          assert.equal(pkg.name, "@abhi1693/medusa-payment-razorpay")
-          assert.equal(tag, `v${pkg.version}`)
-          assert.notEqual(pkg.private, true)
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `archive=release-artifacts/abhi1693-medusa-payment-razorpay-${pkg.version}.tgz\n`)
-          NODE
-      - name: Build and pack the validated source
-        run: |
-          docker compose build tools
-          mkdir -p release-artifacts
-          docker compose run --rm --no-deps -v "$PWD/release-artifacts:/release" tools \
-            sh -ec 'npm run build && npm pack --ignore-scripts --pack-destination /release'
-      - name: Publish the packed release with OIDC
-        env:
-          ARCHIVE: ${{ steps.source.outputs.archive }}
-        run: npm publish --access public --provenance --ignore-scripts "$ARCHIVE"
+    with:
+      package-name: "@abhi1693/medusa-payment-razorpay"
+      tag: ${{ github.event.release.tag_name || inputs.tag }}
+      environment: npm-publish
