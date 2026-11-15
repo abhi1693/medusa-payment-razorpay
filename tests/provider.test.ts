@@ -90,10 +90,12 @@ describe("INR amount and signatures", () => {
   ])("converts native decimal inputs precisely", (v) =>
     expect(minor(v, "inr")).toBe(12345)
   )
-  it.each([0, -1, "1.001", "NaN", Infinity, "9007199254740992"])(
+  it.each([0, -1, "0.004", "NaN", Infinity, "9007199254740992"])(
     "rejects invalid amount %s",
     (v) => expect(() => minor(v, "INR")).toThrow()
   )
+  it("rounds fractional paise before gateway conversion", () =>
+    expect(minor("5762.117", "INR")).toBe(576212))
   it("rejects unsupported currencies", () =>
     expect(() => minor(1, "USD")).toThrow())
   it("verifies raw bytes and rejects tampering", () => {
@@ -142,6 +144,34 @@ describe("native provider lifecycle", () => {
         notes: { medusa_payment_session_id: "payses_123" },
       })
     )
+  })
+  it("uses the same rounded amount for initiation and updates", async () => {
+    const base = request.getMockImplementation()!
+    request.mockImplementation(async (path: string, ...args: unknown[]) => {
+      if (path === "orders" || path === "orders/order_123")
+        return { ...order, amount: 576212 }
+      if (path === "orders/order_123/payments")
+        return { items: [{ ...payment, amount: 576212 }] }
+      return base(path, ...args)
+    })
+    const result = await provider.initiatePayment({
+      amount: "5762.117",
+      currency_code: "inr",
+      context: { idempotency_key: "payses_123" },
+    })
+    expect(result.data.amount).toBe(576212)
+    expect(request).toHaveBeenCalledWith(
+      "orders",
+      expect.objectContaining({ amount: 576212 })
+    )
+    const rounded = { ...data, amount: 576212 }
+    await expect(
+      provider.updatePayment({
+        data: rounded,
+        amount: "5762.117",
+        currency_code: "inr",
+      })
+    ).resolves.toMatchObject({ status: "captured" })
   })
   it("requires native initiation identity", async () =>
     expect(

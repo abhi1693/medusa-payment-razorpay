@@ -152,3 +152,12 @@ the provider never retries a refund automatically.
 ## License
 
 [MIT](LICENSE) © Abhimanyu Saharan.
+
+### INR rounding
+
+Native Medusa totals can contain fractional paise after tax or discounts.
+Amounts are converted with decimal half-up rounding to two INR decimal places
+before gateway submission and accounting comparisons: INR 5762.117 becomes
+576212 paise (INR 5762.12). Negative unsigned amounts, nonfinite values,
+unsafe integers and zero payable amounts remain invalid. Gateway amounts remain
+integer paise and are checked exactly.

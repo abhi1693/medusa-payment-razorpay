@@ -10,7 +10,7 @@ it.each([
 ])("converts native major-unit values exactly: %j", (value) => {
   expect(inrMinorUnits(value)).toBe(12345)
 })
-it.each([undefined, null, NaN, Infinity, "1.001", "not-a-number", -1])(
+it.each([undefined, null, NaN, Infinity, "not-a-number", -1, "-0.001"])(
   "rejects invalid unsigned values: %j",
   (value) => {
     expect(() => inrMinorUnits(value)).toThrow()
@@ -42,3 +42,19 @@ it.each([NaN, Infinity, 1.1, Number.MAX_SAFE_INTEGER + 1])(
     expect(() => inrMajorUnits(amount)).toThrow()
   }
 )
+
+it.each([
+  ["5762.117", 576212],
+  ["1.004", 100],
+  ["1.005", 101],
+  ["1.006", 101],
+  ["1.001", 100],
+  ["0.004", 0],
+  [{ value: "5762.117", precision: 20 }, 576212],
+  [new BigNumber("5762.117"), 576212],
+])("rounds native totals to paise: %j", (value, expected) => {
+  expect(inrMinorUnits(value)).toBe(expected)
+})
+it("rounds signed accounting totals symmetrically", () => {
+  expect(inrMinorUnits("-1.005", { allowNegative: true })).toBe(-101)
+})
