@@ -23,11 +23,11 @@
     "package:check": "npm run build && node scripts/check-package.mjs"
   },
   "peerDependencies": {
-    "@medusajs/framework": "2.22.2 || 2.22.4"
+    "@medusajs/framework": "2.22.2 || 2.22.4 || 2.23.0"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
-    "@medusajs/framework": "2.22.4",
+    "@medusajs/framework": "2.23.0",
     "@types/node": "^24.0.0",
     "eslint": "10.14.0",
     "globals": "17.14.0",

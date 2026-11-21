@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/abhi1693/medusa-payment-razorpay/actions/workflows/ci.yaml/badge.svg?branch=master)](https://github.com/abhi1693/medusa-payment-razorpay/actions/workflows/ci.yaml)
 
-[![Medusa 2.22.2 / 2.22.4](https://img.shields.io/badge/Medusa-2.22.2%20%7C%202.22.4-7c3aed)](https://docs.medusajs.com/)
+[![Medusa 2.22.2 / 2.22.4 / 2.23.0](https://img.shields.io/badge/Medusa-2.22.2%20%7C%202.22.4%20%7C%202.23.0-7c3aed)](https://docs.medusajs.com/)
 [![MIT license](https://img.shields.io/github/license/abhi1693/medusa-payment-razorpay)](LICENSE)
 [![Sponsor](https://img.shields.io/badge/Sponsor-abhi1693-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/abhi1693)
 
@@ -25,7 +25,7 @@ A Razorpay payment provider for Medusa v2, with verified checkout results, autom
 | Payment webhooks      | Signed `payment.authorized` and `payment.captured` events re-fetch gateway state; native processing proceeds only after capture.                                                                                                                                                                       |
 | Refund observation    | Signed refund events trigger authenticated current-state checks through optional application wiring. The optional importer records verified processed Dashboard and deferred native refunds in native accounting without sending funds again. Pending/failed refunds do not create accounting entries. |
 
-The declared framework peer versions are **2.22.2 and 2.22.4**. Native application validation targets Medusa 2.22.2; package development uses 2.22.4. This repository provides a payment module provider and server helpers. Checkout UI, customer authorization, terms acceptance, order-completion policy and infrastructure belong to the consuming application.
+The declared framework peer versions are **2.22.2, 2.22.4 and 2.23.0**. Native application validation targets Medusa 2.22.2; package development uses 2.23.0. This repository provides a payment module provider and server helpers. Checkout UI, customer authorization, terms acceptance, order-completion policy and infrastructure belong to the consuming application.
 
 ## Installation and configuration
 
